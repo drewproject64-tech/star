@@ -4,25 +4,45 @@ import asyncio
 import html
 import logging
 import sqlite3
+from pathlib import Path
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import BotCommand, CallbackQuery, ErrorEvent, Message
+from aiogram.types import BotCommand, CallbackQuery, ErrorEvent, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.types import FSInputFile
 
 from app.config import Settings
-from app.content import PROMOTIONS, UPDATES, Item
+from app.content import (
+    BONUS_DELAY_SECONDS,
+    BONUS_FOLLOWUP,
+    PROMOTION_INTERVAL_SECONDS,
+    PROMOTIONS,
+    REGISTRATION_CAPTION,
+    REGISTRATION_HEADING,
+    REGISTRATION_URL,
+    START_CAPTION,
+    WITHDRAWAL_IMAGES,
+    Item,
+)
 from app.keyboards import detail_menu, item_menu, main_menu, result_menu, submit_menu
 from app.storage import Storage
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 logger = logging.getLogger("star_bot")
+ROOT = Path(__file__).resolve().parent.parent
 
 
 class SubmitState(StatesGroup):
     waiting_for_text = State()
+
+
+def registration_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✨ 𝑩𝑼𝑹𝑨𝑫𝑨𝑵 𝑲𝑨𝒀𝑰𝑻 𝑶𝑳 ✨", url=REGISTRATION_URL)
+    ]])
 
 
 def home_text() -> str:
@@ -66,61 +86,139 @@ def safe_index(data: str | None, prefix: str, count: int) -> int | None:
     return index if 0 <= index < count else None
 
 
-def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
+async def send_promotion_start(bot: Bot, chat_id: int) -> None:
+    start_image = ROOT / "assets" / "start.jpg"
+    if not start_image.is_file():
+        raise FileNotFoundError(f"Required promotion image not found: {start_image}")
+    await bot.send_photo(chat_id, FSInputFile(start_image), caption=START_CAPTION)
+    await bot.send_message(
+        chat_id,
+        f"{REGISTRATION_HEADING}\n\n{REGISTRATION_CAPTION}",
+        reply_markup=registration_keyboard(),
+    )
+
+
+async def send_withdrawal(bot: Bot, chat_id: int, step: int) -> int:
+    index = step % len(WITHDRAWAL_IMAGES)
+    relative_path, caption = WITHDRAWAL_IMAGES[index]
+    image_path = ROOT / relative_path
+    if not image_path.is_file():
+        raise FileNotFoundError(f"Required promotion image not found: {image_path}")
+    await bot.send_photo(
+        chat_id,
+        FSInputFile(image_path),
+        caption=caption,
+        reply_markup=registration_keyboard(),
+    )
+    return (index + 1) % len(WITHDRAWAL_IMAGES)
+
+
+async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
     dp = Dispatcher()
 
-    async def in_promotion_mode() -> bool:
-        return storage.get_mode() == "promotion"
+    def is_admin(message: Message) -> bool:
+        return bool(settings.admin_id and message.from_user and message.from_user.id == settings.admin_id)
 
-    async def reject_during_promotion(message: Message | None = None, callback: CallbackQuery | None = None) -> bool:
-        if not await in_promotion_mode():
-            return False
-        if callback:
-            await callback.answer("The bot is temporarily in promotion mode.", show_alert=True)
-        elif message:
-            await message.answer("The bot is temporarily in promotion mode. Please try again later.")
-        return True
+    async def promotion_scheduler(bot: Bot) -> None:
+        while True:
+            if storage.get_mode() == "promotion":
+                for chat_id in storage.due_bonuses():
+                    try:
+                        await bot.send_message(chat_id, BONUS_FOLLOWUP)
+                        storage.mark_bonus_sent(chat_id)
+                    except TelegramAPIError:
+                        logger.warning("Could not send five-minute follow-up to chat %s", chat_id, exc_info=True)
+                        storage.mark_bonus_sent(chat_id)
+                for row in storage.due_promotions():
+                    chat_id = int(row["chat_id"])
+                    try:
+                        next_step = await send_withdrawal(bot, chat_id, int(row["withdrawal_step"]))
+                        storage.mark_promotion_sent(chat_id, next_step)
+                    except (TelegramAPIError, OSError, FileNotFoundError):
+                        logger.warning("Could not send scheduled image to chat %s", chat_id, exc_info=True)
+                        # Retry on the next interval rather than looping rapidly.
+                        storage.mark_promotion_sent(chat_id, (int(row["withdrawal_step"]) + 1) % len(WITHDRAWAL_IMAGES))
+            await asyncio.sleep(30)
+
+    async def begin_promotion_for_user(bot: Bot, chat_id: int) -> None:
+        await send_promotion_start(bot, chat_id)
+        storage.enable_promotion_for_user(chat_id)
+
+    async def activate_promotion(message: Message, state: FSMContext) -> None:
+        if not is_admin(message):
+            await message.answer("This command is only available to the configured administrator.")
+            return
+        await state.clear()
+        storage.set_mode("promotion")
+        users = storage.known_users()
+        sent = 0
+        failed = 0
+        for chat_id in users:
+            try:
+                await begin_promotion_for_user(message.bot, chat_id)
+                sent += 1
+            except (TelegramAPIError, OSError, FileNotFoundError):
+                failed += 1
+                logger.warning("Could not start promotion for chat %s", chat_id, exc_info=True)
+        await message.answer(
+            f"Promotion mode enabled. Initial promotion sent to {sent} known chat(s); "
+            f"{failed} failed. New /start users will receive it too. "
+            "The follow-up is scheduled after 5 minutes, then withdrawal images rotate every 2 hours. "
+            "Send REVERSE to pause promotions and restore the Star menu."
+        )
+
+    async def deactivate_promotion(message: Message, state: FSMContext) -> None:
+        if not is_admin(message):
+            await message.answer("This command is only available to the configured administrator.")
+            return
+        await state.clear()
+        storage.set_mode("normal")
+        storage.pause_promotions()
+        await message.answer("Normal Star mode restored. Promotion scheduling is paused and saved assets remain in the repository.")
 
     @dp.message(CommandStart())
     async def start(message: Message, state: FSMContext) -> None:
         await state.clear()
-        if await reject_during_promotion(message=message):
+        if message.chat:
+            storage.remember_user(message.chat.id)
+        if storage.get_mode() == "promotion":
+            try:
+                await begin_promotion_for_user(message.bot, message.chat.id)
+            except (TelegramAPIError, OSError, FileNotFoundError):
+                logger.exception("Failed to send initial promotion")
+                await message.answer("The promotion message could not be sent right now. Please try again later.")
             return
         await message.answer(home_text(), reply_markup=main_menu(), parse_mode="HTML")
 
     @dp.message(Command("help"))
     async def help_command(message: Message, state: FSMContext) -> None:
         await state.clear()
-        if await reject_during_promotion(message=message):
+        if storage.get_mode() == "promotion":
+            await message.answer("Promotion mode is active. Use the registration button in the promotion message.")
             return
         await message.answer(help_text(), reply_markup=main_menu(), parse_mode="HTML")
 
     @dp.message(Command("redirect"))
-    async def redirect_command(message: Message, state: FSMContext) -> None:
-        if not settings.admin_id or not message.from_user or message.from_user.id != settings.admin_id:
-            await message.answer("This command is only available to the configured administrator.")
-            return
-        await state.clear()
-        storage.set_mode("promotion")
-        await message.answer(
-            "Promotion mode is enabled. The bot's regular menu is paused.\n"
-            "To restore normal mode, send /reverse.\n\n"
-            "No promotion message or external destination has been configured yet."
-        )
+    async def redirect_slash(message: Message, state: FSMContext) -> None:
+        await activate_promotion(message, state)
+
+    @dp.message(F.text.regexp(r"(?i)^redirect$"))
+    async def redirect_plain(message: Message, state: FSMContext) -> None:
+        await activate_promotion(message, state)
 
     @dp.message(Command("reverse"))
-    async def reverse_command(message: Message, state: FSMContext) -> None:
-        if not settings.admin_id or not message.from_user or message.from_user.id != settings.admin_id:
-            await message.answer("This command is only available to the configured administrator.")
-            return
-        await state.clear()
-        storage.set_mode("normal")
-        await message.answer("Normal mode restored. Send /start to open the menu.")
+    async def reverse_slash(message: Message, state: FSMContext) -> None:
+        await deactivate_promotion(message, state)
+
+    @dp.message(F.text.regexp(r"(?i)^reverse$"))
+    async def reverse_plain(message: Message, state: FSMContext) -> None:
+        await deactivate_promotion(message, state)
 
     @dp.callback_query(F.data == "home")
     async def home(callback: CallbackQuery, state: FSMContext) -> None:
         await state.clear()
-        if await reject_during_promotion(callback=callback):
+        if storage.get_mode() == "promotion":
+            await callback.answer("Promotion mode is active.", show_alert=True)
             return
         await callback.answer()
         if callback.message:
@@ -129,7 +227,8 @@ def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
     @dp.callback_query(F.data == "promotions")
     async def promotions(callback: CallbackQuery, state: FSMContext) -> None:
         await state.clear()
-        if await reject_during_promotion(callback=callback):
+        if storage.get_mode() == "promotion":
+            await callback.answer("Promotion mode is active.", show_alert=True)
             return
         await callback.answer()
         if callback.message:
@@ -137,7 +236,8 @@ def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
 
     @dp.callback_query(F.data.startswith("promotion:"))
     async def promotion_item(callback: CallbackQuery) -> None:
-        if await reject_during_promotion(callback=callback):
+        if storage.get_mode() == "promotion":
+            await callback.answer("Promotion mode is active.", show_alert=True)
             return
         index = safe_index(callback.data, "promotion", len(PROMOTIONS))
         if index is None:
@@ -150,7 +250,8 @@ def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
     @dp.callback_query(F.data == "updates")
     async def updates(callback: CallbackQuery, state: FSMContext) -> None:
         await state.clear()
-        if await reject_during_promotion(callback=callback):
+        if storage.get_mode() == "promotion":
+            await callback.answer("Promotion mode is active.", show_alert=True)
             return
         await callback.answer()
         if callback.message:
@@ -158,7 +259,8 @@ def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
 
     @dp.callback_query(F.data.startswith("update:"))
     async def update_item(callback: CallbackQuery) -> None:
-        if await reject_during_promotion(callback=callback):
+        if storage.get_mode() == "promotion":
+            await callback.answer("Promotion mode is active.", show_alert=True)
             return
         index = safe_index(callback.data, "update", len(UPDATES))
         if index is None:
@@ -170,7 +272,8 @@ def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
 
     @dp.callback_query(F.data == "submit")
     async def submit(callback: CallbackQuery, state: FSMContext) -> None:
-        if await reject_during_promotion(callback=callback):
+        if storage.get_mode() == "promotion":
+            await callback.answer("Promotion mode is active.", show_alert=True)
             return
         await state.set_state(SubmitState.waiting_for_text)
         await callback.answer()
@@ -183,8 +286,9 @@ def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
 
     @dp.message(SubmitState.waiting_for_text)
     async def receive_submission(message: Message, state: FSMContext) -> None:
-        if await reject_during_promotion(message=message):
+        if storage.get_mode() == "promotion":
             await state.clear()
+            await message.answer("Promotion mode is active. Normal submissions are paused.")
             return
         text = (message.text or "").strip()
         if not text:
@@ -233,7 +337,8 @@ def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
 
     @dp.message()
     async def fallback(message: Message, state: FSMContext) -> None:
-        if await reject_during_promotion(message=message):
+        if storage.get_mode() == "promotion":
+            await message.answer("Promotion mode is active. Use the registration button in the promotion message.")
             return
         if await state.get_state() == SubmitState.waiting_for_text:
             await message.answer("Please send submission text, or tap Main Menu to cancel.", reply_markup=submit_menu())
@@ -247,20 +352,54 @@ async def main() -> None:
     settings = Settings.from_env()
     storage = Storage(settings.database_path)
     bot = Bot(token=settings.bot_token)
-    dp = build_dispatcher(storage, settings)
+    dp = await build_dispatcher(storage, settings)
+    scheduler_task = asyncio.create_task(promotion_scheduler_runner(bot, storage))
     logger.info("Starting Star bot")
     try:
         await bot.set_my_commands([
             BotCommand(command="start", description="Open the main menu"),
             BotCommand(command="help", description="Learn how to use the bot"),
+            BotCommand(command="redirect", description="Admin: enable promotion mode"),
+            BotCommand(command="reverse", description="Admin: restore normal mode"),
         ])
         await bot.set_my_short_description("Promotions, updates and text submissions inside Telegram.")
         await bot.set_my_description("A Telegram bot to browse promotion information, read updates and submit promotion text.")
         await bot.delete_webhook(drop_pending_updates=True)
         await dp.start_polling(bot)
     finally:
+        scheduler_task.cancel()
+        await asyncio.gather(scheduler_task, return_exceptions=True)
         await bot.session.close()
         logger.info("Star bot stopped")
+
+
+async def promotion_scheduler_runner(bot: Bot, storage: Storage) -> None:
+    while True:
+        if storage.get_mode() == "promotion":
+            for chat_id in storage.due_bonuses():
+                try:
+                    await bot.send_message(chat_id, BONUS_FOLLOWUP)
+                except TelegramAPIError:
+                    logger.warning("Could not send five-minute follow-up to chat %s", chat_id, exc_info=True)
+                finally:
+                    storage.mark_bonus_sent(chat_id)
+            for row in storage.due_promotions():
+                chat_id = int(row["chat_id"])
+                step = int(row["withdrawal_step"])
+                try:
+                    index = step % len(WITHDRAWAL_IMAGES)
+                    relative_path, caption = WITHDRAWAL_IMAGES[index]
+                    image_path = ROOT / relative_path
+                    if not image_path.is_file():
+                        raise FileNotFoundError(f"Required promotion image not found: {image_path}")
+                    await bot.send_photo(chat_id, FSInputFile(image_path), caption=caption, reply_markup=registration_keyboard())
+                    next_step = (index + 1) % len(WITHDRAWAL_IMAGES)
+                except (TelegramAPIError, OSError, FileNotFoundError):
+                    logger.warning("Could not send scheduled image to chat %s", chat_id, exc_info=True)
+                    next_step = (step + 1) % len(WITHDRAWAL_IMAGES)
+                finally:
+                    storage.mark_promotion_sent(chat_id, next_step)
+        await asyncio.sleep(30)
 
 
 if __name__ == "__main__":
