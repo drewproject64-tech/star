@@ -116,6 +116,27 @@ class Storage:
             connection.commit()
             return cursor.rowcount == 1
 
+    def import_user_ids(self, source: Path) -> int:
+        """Import recovered private-chat IDs without altering existing schedules."""
+        if not source.is_file():
+            return 0
+        chat_ids = {
+            int(line.strip()) for line in source.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        }
+        if any(chat_id <= 0 for chat_id in chat_ids):
+            raise ValueError("Recovered user IDs must be positive private-chat IDs")
+        with self._connect() as connection:
+            before = connection.total_changes
+            connection.executemany(
+                "INSERT INTO promo_users(chat_id, enabled) VALUES (?, 0) "
+                "ON CONFLICT(chat_id) DO NOTHING",
+                [(chat_id,) for chat_id in sorted(chat_ids)],
+            )
+            added = connection.total_changes - before
+            connection.commit()
+            return added
+
     def known_users(self) -> list[int]:
         with self._connect() as connection:
             return [int(row["chat_id"]) for row in connection.execute("SELECT chat_id FROM promo_users")]

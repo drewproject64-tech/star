@@ -405,6 +405,8 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
 async def main() -> None:
     settings = Settings.from_env()
     storage = Storage(settings.database_path)
+    imported = storage.import_user_ids(ROOT / "recovered_user_ids.txt")
+    logger.info("Imported %s recovered users; total saved users: %s", imported, len(storage.known_users()))
     bot = Bot(token=settings.bot_token)
     dp = await build_dispatcher(storage, settings)
     scheduler_task = asyncio.create_task(promotion_scheduler_runner(bot, storage))
