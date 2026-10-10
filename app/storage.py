@@ -86,6 +86,13 @@ class Storage:
         with self._connect() as connection:
             return [int(row["chat_id"]) for row in connection.execute("SELECT chat_id FROM promo_users")]
 
+    def has_promotion_schedule(self, chat_id: int) -> bool:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT next_promo_at FROM promo_users WHERE chat_id=?", (chat_id,)
+            ).fetchone()
+            return bool(row and row["next_promo_at"] is not None)
+
     def enable_promotion_for_user(self, chat_id: int, now: float | None = None) -> None:
         now = time.time() if now is None else now
         with self._connect() as connection:
@@ -95,6 +102,13 @@ class Storage:
                    ON CONFLICT(chat_id) DO UPDATE SET next_promo_at=excluded.next_promo_at,
                    bonus_at=excluded.bonus_at, withdrawal_step=0, enabled=1""",
                 (chat_id, now + 2 * 60 * 60, now + 5 * 60),
+            )
+            connection.commit()
+
+    def resume_promotions(self) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE promo_users SET enabled=1 WHERE next_promo_at IS NOT NULL"
             )
             connection.commit()
 
