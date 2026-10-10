@@ -5,6 +5,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from app.content import BONUS_DELAY_SECONDS, PROMOTION_INTERVAL_SECONDS
+
 
 class Storage:
     """SQLite persistence for submissions, mode and per-user promotion schedule."""
@@ -101,7 +103,7 @@ class Storage:
                    VALUES (?, ?, ?, 0, 1)
                    ON CONFLICT(chat_id) DO UPDATE SET next_promo_at=excluded.next_promo_at,
                    bonus_at=excluded.bonus_at, withdrawal_step=0, enabled=1""",
-                (chat_id, now + 2 * 60 * 60, now + 5 * 60),
+                (chat_id, now + PROMOTION_INTERVAL_SECONDS, now + BONUS_DELAY_SECONDS),
             )
             connection.commit()
 
