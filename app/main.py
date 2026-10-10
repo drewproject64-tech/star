@@ -18,6 +18,7 @@ from app.config import Settings
 from app.content import (
     BONUS_DELAY_SECONDS,
     BONUS_FOLLOWUP,
+    NEW_USER_SEQUENCE,
     PROMOTION_INTERVAL_SECONDS,
     PROMOTIONS,
     REGISTRATION_CAPTION,
@@ -86,16 +87,10 @@ def safe_index(data: str | None, prefix: str, count: int) -> int | None:
     return index if 0 <= index < count else None
 
 
-async def send_promotion_start(bot: Bot, chat_id: int) -> None:
-    start_image = ROOT / "assets" / "start.jpg"
-    if not start_image.is_file():
-        raise FileNotFoundError(f"Required promotion image not found: {start_image}")
-    await bot.send_photo(chat_id, FSInputFile(start_image), caption=START_CAPTION)
-    await bot.send_message(
-        chat_id,
-        f"{REGISTRATION_HEADING}\n\n{REGISTRATION_CAPTION}",
-        reply_markup=registration_keyboard(),
-    )
+async def send_promotion_start(bot: Bot, chat_id: int, storage: Storage) -> None:
+    # A new /start begins the Turkish timed sequence. The schedule is persisted in SQLite.
+    await bot.send_message(chat_id, NEW_USER_SEQUENCE[0])
+    storage.start_message_sequence(chat_id)
 
 
 async def send_withdrawal(bot: Bot, chat_id: int, step: int) -> int:
@@ -121,8 +116,7 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
 
 
     async def begin_promotion_for_user(bot: Bot, chat_id: int) -> None:
-        await send_promotion_start(bot, chat_id)
-        storage.enable_promotion_for_user(chat_id)
+        await send_promotion_start(bot, chat_id, storage)
 
     async def activate_promotion(message: Message, state: FSMContext) -> None:
         if not is_admin(message):
@@ -130,26 +124,11 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
             return
         await state.clear()
         storage.set_mode("promotion")
-        users = storage.known_users()
         storage.resume_promotions()
-        sent = 0
-        resumed = 0
-        failed = 0
-        for chat_id in users:
-            if storage.has_promotion_schedule(chat_id):
-                resumed += 1
-                continue
-            try:
-                await begin_promotion_for_user(message.bot, chat_id)
-                sent += 1
-            except (TelegramAPIError, OSError, FileNotFoundError):
-                failed += 1
-                logger.warning("Could not start promotion for chat %s", chat_id, exc_info=True)
         await message.answer(
-            f"Promotion mode enabled. Initial promotion sent to {sent} new chat(s); "
-            f"{resumed} existing schedule(s) resumed; {failed} failed. New /start users will receive it too. "
-            "The follow-up is scheduled after 5 minutes, then withdrawal images rotate every 2 hours. "
-            "Send REVERSE to pause promotions and restore the Star menu."
+            "Promotion mode enabled. The Turkish timed message sequence will start for new users when they send /start. "
+            "Previously recorded users will not be sent this sequence automatically. "
+            "Send REVERSE to pause scheduled promotions and restore the Star menu."
         )
 
     async def deactivate_promotion(message: Message, state: FSMContext) -> None:
@@ -164,14 +143,16 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
     @dp.message(CommandStart())
     async def start(message: Message, state: FSMContext) -> None:
         await state.clear()
-        if message.chat:
-            storage.remember_user(message.chat.id)
+        is_new_user = storage.remember_user(message.chat.id) if message.chat else False
         if storage.get_mode() == "promotion":
+            if not is_new_user:
+                await message.answer("You have already started this bot. The new-user message sequence is only sent on a first start.")
+                return
             try:
                 await begin_promotion_for_user(message.bot, message.chat.id)
             except (TelegramAPIError, OSError, FileNotFoundError):
-                logger.exception("Failed to send initial promotion")
-                await message.answer("The promotion message could not be sent right now. Please try again later.")
+                logger.exception("Failed to send the first timed message")
+                await message.answer("The first message could not be sent right now. Please try again later.")
             return
         await message.answer(home_text(), reply_markup=main_menu(), parse_mode="HTML")
 
@@ -361,6 +342,26 @@ async def main() -> None:
 async def promotion_scheduler_runner(bot: Bot, storage: Storage) -> None:
     while True:
         if storage.get_mode() == "promotion":
+            for row in storage.due_sequences():
+                chat_id = int(row["chat_id"])
+                step = int(row["sequence_step"])
+                try:
+                    if step < 0 or step >= len(NEW_USER_SEQUENCE):
+                        storage.mark_sequence_sent(chat_id, len(NEW_USER_SEQUENCE) - 1)
+                        continue
+                    message_text = NEW_USER_SEQUENCE[step]
+                    # Optional final image: add assets/research_final.jpg to show it with message five.
+                    if step == len(NEW_USER_SEQUENCE) - 1:
+                        final_image = ROOT / "assets" / "research_final.jpg"
+                        if final_image.is_file():
+                            await bot.send_photo(chat_id, FSInputFile(final_image), caption=message_text)
+                        else:
+                            await bot.send_message(chat_id, message_text)
+                    else:
+                        await bot.send_message(chat_id, message_text)
+                    storage.mark_sequence_sent(chat_id, step)
+                except TelegramAPIError:
+                    logger.warning("Could not send timed message %s to chat %s", step + 1, chat_id, exc_info=True)
             for chat_id in storage.due_bonuses():
                 try:
                     await bot.send_message(chat_id, BONUS_FOLLOWUP)
