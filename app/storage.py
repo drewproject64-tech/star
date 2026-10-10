@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
 
 class Storage:
-    """SQLite persistence for user submissions."""
+    """SQLite persistence for submissions, mode and per-user promotion schedule."""
 
     def __init__(self, path: str = "data/star.db") -> None:
         self.path = Path(path)
@@ -15,7 +16,7 @@ class Storage:
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path)
+        connection = sqlite3.connect(self.path, timeout=30)
         connection.row_factory = sqlite3.Row
         return connection
 
@@ -34,6 +35,15 @@ class Storage:
                 CREATE TABLE IF NOT EXISTS bot_settings (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
+                )
+            """)
+            connection.execute("""
+                CREATE TABLE IF NOT EXISTS promo_users (
+                    chat_id INTEGER PRIMARY KEY,
+                    next_promo_at REAL,
+                    bonus_at REAL,
+                    withdrawal_step INTEGER NOT NULL DEFAULT 0,
+                    enabled INTEGER NOT NULL DEFAULT 0
                 )
             """)
             connection.commit()
@@ -62,4 +72,62 @@ class Storage:
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                 (mode,),
             )
+            connection.commit()
+
+    def remember_user(self, chat_id: int) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO promo_users(chat_id, enabled) VALUES (?, 0) "
+                "ON CONFLICT(chat_id) DO NOTHING", (chat_id,)
+            )
+            connection.commit()
+
+    def known_users(self) -> list[int]:
+        with self._connect() as connection:
+            return [int(row["chat_id"]) for row in connection.execute("SELECT chat_id FROM promo_users")]
+
+    def enable_promotion_for_user(self, chat_id: int, now: float | None = None) -> None:
+        now = time.time() if now is None else now
+        with self._connect() as connection:
+            connection.execute(
+                """INSERT INTO promo_users(chat_id, next_promo_at, bonus_at, withdrawal_step, enabled)
+                   VALUES (?, ?, ?, 0, 1)
+                   ON CONFLICT(chat_id) DO UPDATE SET next_promo_at=excluded.next_promo_at,
+                   bonus_at=excluded.bonus_at, withdrawal_step=0, enabled=1""",
+                (chat_id, now + 2 * 60 * 60, now + 5 * 60),
+            )
+            connection.commit()
+
+    def due_bonuses(self, now: float | None = None) -> list[int]:
+        now = time.time() if now is None else now
+        with self._connect() as connection:
+            return [int(r["chat_id"]) for r in connection.execute(
+                "SELECT chat_id FROM promo_users WHERE enabled=1 AND bonus_at IS NOT NULL AND bonus_at<=?", (now,)
+            )]
+
+    def mark_bonus_sent(self, chat_id: int) -> None:
+        with self._connect() as connection:
+            connection.execute("UPDATE promo_users SET bonus_at=NULL WHERE chat_id=?", (chat_id,))
+            connection.commit()
+
+    def due_promotions(self, now: float | None = None) -> list[sqlite3.Row]:
+        now = time.time() if now is None else now
+        with self._connect() as connection:
+            return list(connection.execute(
+                "SELECT chat_id, withdrawal_step FROM promo_users "
+                "WHERE enabled=1 AND next_promo_at IS NOT NULL AND next_promo_at<=?", (now,)
+            ))
+
+    def mark_promotion_sent(self, chat_id: int, next_step: int, now: float | None = None) -> None:
+        now = time.time() if now is None else now
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE promo_users SET withdrawal_step=?, next_promo_at=? WHERE chat_id=?",
+                (next_step, now + 2 * 60 * 60, chat_id),
+            )
+            connection.commit()
+
+    def pause_promotions(self) -> None:
+        with self._connect() as connection:
+            connection.execute("UPDATE promo_users SET enabled=0")
             connection.commit()
