@@ -160,10 +160,7 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
         await state.clear()
         is_new_user = storage.remember_user(message.chat.id) if message.chat else False
         if storage.get_mode() == "promotion":
-            # Let the configured administrator test the sequence with /start even if already recorded.
-            if not is_new_user and not is_admin(message):
-                await message.answer("The timed message sequence is sent when a new user starts the bot.")
-                return
+            # /start is an explicit user action: show the opening message to anyone who requests it.
             try:
                 await begin_promotion_for_user(message.bot, message.chat.id)
             except (TelegramAPIError, OSError, FileNotFoundError):
