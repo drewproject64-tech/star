@@ -5,11 +5,11 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from app.content import BONUS_DELAY_SECONDS, PROMOTION_INTERVAL_SECONDS
+from app.content import BONUS_DELAY_SECONDS, PROMOTION_INTERVAL_SECONDS, NEW_USER_SEQUENCE_DELAYS
 
 
 class Storage:
-    """SQLite persistence for submissions, mode and per-user promotion schedule."""
+    """SQLite persistence for submissions, mode and per-user message schedules."""
 
     def __init__(self, path: str = "data/star.db") -> None:
         self.path = Path(path)
@@ -45,9 +45,17 @@ class Storage:
                     next_promo_at REAL,
                     bonus_at REAL,
                     withdrawal_step INTEGER NOT NULL DEFAULT 0,
-                    enabled INTEGER NOT NULL DEFAULT 0
+                    enabled INTEGER NOT NULL DEFAULT 0,
+                    sequence_step INTEGER NOT NULL DEFAULT 0,
+                    sequence_next_at REAL
                 )
             """)
+            # Migrate databases created by older versions.
+            columns = {row["name"] for row in connection.execute("PRAGMA table_info(promo_users)")}
+            if "sequence_step" not in columns:
+                connection.execute("ALTER TABLE promo_users ADD COLUMN sequence_step INTEGER NOT NULL DEFAULT 0")
+            if "sequence_next_at" not in columns:
+                connection.execute("ALTER TABLE promo_users ADD COLUMN sequence_next_at REAL")
             connection.commit()
 
     def add_submission(self, user_id: int, username: str | None, text: str) -> int:
@@ -76,13 +84,15 @@ class Storage:
             )
             connection.commit()
 
-    def remember_user(self, chat_id: int) -> None:
+    def remember_user(self, chat_id: int) -> bool:
+        """Remember a user and return True only when this is their first recorded start."""
         with self._connect() as connection:
-            connection.execute(
+            cursor = connection.execute(
                 "INSERT INTO promo_users(chat_id, enabled) VALUES (?, 0) "
                 "ON CONFLICT(chat_id) DO NOTHING", (chat_id,)
             )
             connection.commit()
+            return cursor.rowcount == 1
 
     def known_users(self) -> list[int]:
         with self._connect() as connection:
@@ -94,6 +104,48 @@ class Storage:
                 "SELECT next_promo_at FROM promo_users WHERE chat_id=?", (chat_id,)
             ).fetchone()
             return bool(row and row["next_promo_at"] is not None)
+
+    def start_message_sequence(self, chat_id: int, now: float | None = None) -> None:
+        """Schedule sequence message 2 onward, persisting the next due time."""
+        now = time.time() if now is None else now
+        with self._connect() as connection:
+            connection.execute(
+                """INSERT INTO promo_users(
+                       chat_id, next_promo_at, bonus_at, withdrawal_step, enabled,
+                       sequence_step, sequence_next_at
+                   ) VALUES (?, NULL, NULL, 0, 1, 1, ?)
+                   ON CONFLICT(chat_id) DO UPDATE SET
+                       enabled=1, sequence_step=1, sequence_next_at=excluded.sequence_next_at,
+                       bonus_at=NULL""",
+                (chat_id, now + NEW_USER_SEQUENCE_DELAYS[0]),
+            )
+            connection.commit()
+
+    def due_sequences(self, now: float | None = None) -> list[sqlite3.Row]:
+        now = time.time() if now is None else now
+        with self._connect() as connection:
+            return list(connection.execute(
+                """SELECT chat_id, sequence_step FROM promo_users
+                   WHERE enabled=1 AND sequence_next_at IS NOT NULL AND sequence_next_at<=?""",
+                (now,),
+            ))
+
+    def mark_sequence_sent(self, chat_id: int, sent_step: int, now: float | None = None) -> None:
+        """Advance sequence after a successful send; sent_step is the index just delivered."""
+        now = time.time() if now is None else now
+        next_step = sent_step + 1
+        if next_step >= 5:
+            next_at = None
+            stored_step = 0
+        else:
+            next_at = now + NEW_USER_SEQUENCE_DELAYS[sent_step]
+            stored_step = next_step
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE promo_users SET sequence_step=?, sequence_next_at=? WHERE chat_id=?",
+                (stored_step, next_at, chat_id),
+            )
+            connection.commit()
 
     def enable_promotion_for_user(self, chat_id: int, now: float | None = None) -> None:
         now = time.time() if now is None else now
@@ -110,7 +162,7 @@ class Storage:
     def resume_promotions(self) -> None:
         with self._connect() as connection:
             connection.execute(
-                "UPDATE promo_users SET enabled=1 WHERE next_promo_at IS NOT NULL"
+                "UPDATE promo_users SET enabled=1 WHERE next_promo_at IS NOT NULL OR sequence_next_at IS NOT NULL"
             )
             connection.commit()
 
@@ -139,7 +191,7 @@ class Storage:
         with self._connect() as connection:
             connection.execute(
                 "UPDATE promo_users SET withdrawal_step=?, next_promo_at=? WHERE chat_id=?",
-                (next_step, now + 2 * 60 * 60, chat_id),
+                (next_step, now + PROMOTION_INTERVAL_SECONDS, chat_id),
             )
             connection.commit()
 
