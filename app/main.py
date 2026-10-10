@@ -25,6 +25,7 @@ from app.content import (
     REGISTRATION_HEADING,
     REGISTRATION_URL,
     START_CAPTION,
+    UPDATES,
     WITHDRAWAL_IMAGES,
     Item,
 )
