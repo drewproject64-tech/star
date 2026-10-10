@@ -39,6 +39,10 @@ logger = logging.getLogger("star_bot")
 ROOT = Path(__file__).resolve().parent.parent
 
 
+class BroadcastState(StatesGroup):
+    waiting_for_text = State()
+
+
 class SubmitState(StatesGroup):
     waiting_for_text = State()
 
@@ -55,6 +59,7 @@ def admin_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="⏸ REVERSE — Disable", callback_data="admin:reverse")],
         [InlineKeyboardButton(text="ℹ️ Check Status", callback_data="admin:status")],
         [InlineKeyboardButton(text="👥 Users & Stats", callback_data="admin:users")],
+        [InlineKeyboardButton(text="📣 Broadcast Message", callback_data="admin:broadcast")],
     ])
 
 
@@ -238,21 +243,35 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
             await message.answer(f"Broadcast complete. Delivered: {sent}. Failed: {failed}.")
 
     @dp.message(Command("admin"))
-    async def admin_command(message: Message) -> None:
+    async def admin_command(message: Message, state: FSMContext) -> None:
         if not is_admin(message):
             await message.answer("Admin access denied. Set ADMIN_ID in Render to your numeric Telegram user ID, then redeploy.")
             return
+        await state.clear()
         await message.answer(
             f"Admin panel\nMode: <b>{html.escape(storage.get_mode().upper())}</b>",
             reply_markup=admin_keyboard(), parse_mode="HTML",
         )
 
     @dp.callback_query(F.data.startswith("admin:"))
-    async def admin_actions(callback: CallbackQuery) -> None:
+    async def admin_actions(callback: CallbackQuery, state: FSMContext) -> None:
         if not is_admin_callback(callback):
             await callback.answer("Admin access denied.", show_alert=True)
             return
         action = callback.data.split(":", 1)[1]
+        if action == "broadcast":
+            if not callback.message or callback.message.chat.type != "private":
+                await callback.answer("Use your private chat with the bot.", show_alert=True)
+                return
+            await state.clear()
+            await state.set_state(BroadcastState.waiting_for_text)
+            await callback.answer()
+            await callback.message.answer(
+                "Type the text you want to broadcast. Your next text message will be sent to saved users.\n"
+                "Use /admin to cancel. /redirect and /reverse remain mode commands."
+            )
+            return
+        await state.clear()
         if action == "redirect":
             count = storage.activate_for_known_users()
             status = f"✅ <b>REDIRECT enabled</b>\nCurrent sequence queued for {count} previously recorded users. New /start requests also receive it."
@@ -365,6 +384,21 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
                 "Do not include passwords, payment credentials or other private information.",
                 reply_markup=submit_menu(), parse_mode="HTML",
             )
+
+    @dp.message(BroadcastState.waiting_for_text)
+    async def broadcast_composer(message: Message, state: FSMContext) -> None:
+        if not is_admin(message):
+            await state.clear()
+            return
+        text = (message.text or "").strip()
+        if not text:
+            await message.answer("Please send text, or /admin to cancel.")
+            return
+        if text.startswith("/") or text.lower() in {"redirect", "reverse"}:
+            await state.clear()
+            await message.answer("Command not broadcast. Open /admin to compose again.")
+            return
+        await send_command(message, state, CommandObject(command="send", args=text))
 
     @dp.message(SubmitState.waiting_for_text)
     async def receive_submission(message: Message, state: FSMContext) -> None:
