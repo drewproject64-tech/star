@@ -97,7 +97,8 @@ def safe_index(data: str | None, prefix: str, count: int) -> int | None:
 
 
 async def send_promotion_start(bot: Bot, chat_id: int, storage: Storage) -> None:
-    # A new /start begins the Turkish timed sequence. The schedule is persisted in SQLite.
+    # Wait five seconds so the first message arrives shortly after /start.
+    await asyncio.sleep(5)
     await bot.send_message(chat_id, NEW_USER_SEQUENCE[0])
     storage.start_message_sequence(chat_id)
 
@@ -159,8 +160,9 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
         await state.clear()
         is_new_user = storage.remember_user(message.chat.id) if message.chat else False
         if storage.get_mode() == "promotion":
-            if not is_new_user:
-                await message.answer("You have already started this bot. The new-user message sequence is only sent on a first start.")
+            # Let the configured administrator test the sequence with /start even if already recorded.
+            if not is_new_user and not is_admin(message):
+                await message.answer("The timed message sequence is sent when a new user starts the bot.")
                 return
             try:
                 await begin_promotion_for_user(message.bot, message.chat.id)
