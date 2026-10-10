@@ -4,10 +4,20 @@ REGISTRATION_URL = "https://strz.cc/CoxW"
 REGISTRATION_HEADING = "✨✨ 𝑩𝑼𝑹𝑨𝑫𝑨𝑵 𝑲𝑨𝒀𝑰𝑻 𝑶𝑳 ✨✨"
 REGISTRATION_CAPTION = "Kayıt olmak için aşağıdaki butona dokunun."
 START_CAPTION = "🌟 Starz'a hoş geldiniz! Güncel kampanya bilgilerini ve kayıt seçeneklerini aşağıdan inceleyebilirsiniz."
-BONUS_FOLLOWUP = (
-    "💵 Even a smaller number can trigger a fast tap.\n"
-    "Your $250 bonus is right there — ready to turn into a strong start."
+
+# Timed Turkish messages sent to users who start the bot while promotion mode is active.
+NEW_USER_SEQUENCE = (
+    "Merhaba, orada mısın?",
+    "Bu fırsatı şimdi değerlendir: 2 $ yatır ve 250 $ hoş geldin bonusu kazan.",
+    "Bu hafta sonu büyük bir kazanç elde etme şansın artık daha yüksek.",
+    "Kaybedersen kaybının %10'u iade edilir.",
+    "💵 Küçük bir miktar bile hızlıca harekete geçmeni sağlayabilir.\n"
+    "250 $ bonusun seni bekliyor — güçlü bir başlangıç yapmaya hazır.",
 )
+# Delays between messages 1→2, 2→3, 3→4 and 4→5.
+NEW_USER_SEQUENCE_DELAYS = (5, 10, 50, 300)
+BONUS_FOLLOWUP = NEW_USER_SEQUENCE[-1]
+
 WITHDRAWAL_IMAGES = (
     ("assets/withdrawal_257000.jpg", "💬 Paylaşılan çekim görseli: 257.000 TL"),
     ("assets/withdrawal_320000.jpg", "💬 Paylaşılan çekim görseli: 320.000 TL"),
