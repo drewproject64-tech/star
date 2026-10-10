@@ -5,7 +5,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from app.content import BONUS_DELAY_SECONDS, PROMOTION_INTERVAL_SECONDS, NEW_USER_SEQUENCE_DELAYS
+from app.content import BONUS_DELAY_SECONDS, PROMOTION_INTERVAL_SECONDS, NEW_USER_SEQUENCE_DELAYS, NEW_USER_SEQUENCE
 
 
 class Storage:
@@ -84,6 +84,28 @@ class Storage:
             )
             connection.commit()
 
+    def activate_for_known_users(self, now: float | None = None) -> int:
+        """Enable promotion mode and queue the current sequence for saved private chats."""
+        now = time.time() if now is None else now
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO bot_settings(key, value) VALUES('mode', 'promotion') "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+            )
+            connection.execute("UPDATE promo_users SET enabled=0")
+            cursor = connection.execute(
+                """UPDATE promo_users SET enabled=1, sequence_step=0,
+                   sequence_next_at=?, bonus_at=NULL, next_promo_at=NULL
+                   WHERE chat_id>0""", (now + 5,)
+            )
+            connection.commit()
+            return cursor.rowcount
+
+    def disable_user_schedule(self, chat_id: int) -> None:
+        with self._connect() as connection:
+            connection.execute("UPDATE promo_users SET enabled=0 WHERE chat_id=?", (chat_id,))
+            connection.commit()
+
     def remember_user(self, chat_id: int) -> bool:
         """Remember a user and return True only when this is their first recorded start."""
         with self._connect() as connection:
@@ -134,7 +156,7 @@ class Storage:
         """Advance sequence after a successful send; sent_step is the index just delivered."""
         now = time.time() if now is None else now
         next_step = sent_step + 1
-        if next_step >= 5:
+        if next_step >= len(NEW_USER_SEQUENCE):
             next_at = None
             stored_step = 0
         else:

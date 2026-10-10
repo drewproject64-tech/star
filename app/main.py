@@ -7,7 +7,7 @@ import sqlite3
 from pathlib import Path
 
 from aiogram import Bot, Dispatcher, F
-from aiogram.exceptions import TelegramAPIError
+from aiogram.exceptions import TelegramAPIError, TelegramForbiddenError, TelegramRetryAfter
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -136,13 +136,10 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
             await message.answer("This command is only available to the configured administrator.")
             return
         await state.clear()
-        # Keep this rollout limited to users who start the bot for the first time after activation.
-        # Existing scheduled promotion/rotation jobs stay paused instead of being broadcast to old users.
-        storage.pause_promotions()
-        storage.set_mode("promotion")
+        count = storage.activate_for_known_users()
         await message.answer(
-            "Promotion mode enabled. The Turkish timed message sequence will start for new users when they send /start. "
-            "Previously recorded users will not be sent this sequence automatically. "
+            f"Promotion mode enabled. The current message sequence is queued for {count} previously recorded users. "
+            "New /start requests also receive the sequence. "
             "Send REVERSE to pause scheduled promotions and restore the Star menu."
         )
 
@@ -186,9 +183,8 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
             return
         action = callback.data.split(":", 1)[1]
         if action == "redirect":
-            storage.pause_promotions()
-            storage.set_mode("promotion")
-            status = "✅ <b>REDIRECT enabled</b>\nNew users will see the configured flow. Existing users are not broadcast to."
+            count = storage.activate_for_known_users()
+            status = f"✅ <b>REDIRECT enabled</b>\nCurrent sequence queued for {count} previously recorded users. New /start requests also receive it."
         elif action == "reverse":
             storage.set_mode("normal")
             storage.pause_promotions()
@@ -407,6 +403,12 @@ async def promotion_scheduler_runner(bot: Bot, storage: Storage) -> None:
                     else:
                         await bot.send_message(chat_id, message_text)
                     storage.mark_sequence_sent(chat_id, step)
+                    await asyncio.sleep(0.05)
+                except TelegramForbiddenError:
+                    storage.disable_user_schedule(chat_id)
+                    logger.info("Stopped scheduling for unreachable chat %s", chat_id)
+                except TelegramRetryAfter as exc:
+                    await asyncio.sleep(exc.retry_after)
                 except TelegramAPIError:
                     logger.warning("Could not send timed message %s to chat %s", step + 1, chat_id, exc_info=True)
             for chat_id in storage.due_bonuses():
@@ -432,7 +434,7 @@ async def promotion_scheduler_runner(bot: Bot, storage: Storage) -> None:
                     next_step = (step + 1) % len(WITHDRAWAL_IMAGES)
                 finally:
                     storage.mark_promotion_sent(chat_id, next_step)
-        await asyncio.sleep(30)
+        await asyncio.sleep(1)
 
 
 if __name__ == "__main__":
