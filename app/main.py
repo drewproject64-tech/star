@@ -123,8 +123,10 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
             await message.answer("This command is only available to the configured administrator.")
             return
         await state.clear()
+        # Keep this rollout limited to users who start the bot for the first time after activation.
+        # Existing scheduled promotion/rotation jobs stay paused instead of being broadcast to old users.
+        storage.pause_promotions()
         storage.set_mode("promotion")
-        storage.resume_promotions()
         await message.answer(
             "Promotion mode enabled. The Turkish timed message sequence will start for new users when they send /start. "
             "Previously recorded users will not be sent this sequence automatically. "
