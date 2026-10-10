@@ -119,26 +119,6 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
     def is_admin(message: Message) -> bool:
         return bool(settings.admin_id and message.from_user and message.from_user.id == settings.admin_id)
 
-    async def promotion_scheduler(bot: Bot) -> None:
-        while True:
-            if storage.get_mode() == "promotion":
-                for chat_id in storage.due_bonuses():
-                    try:
-                        await bot.send_message(chat_id, BONUS_FOLLOWUP)
-                        storage.mark_bonus_sent(chat_id)
-                    except TelegramAPIError:
-                        logger.warning("Could not send five-minute follow-up to chat %s", chat_id, exc_info=True)
-                        storage.mark_bonus_sent(chat_id)
-                for row in storage.due_promotions():
-                    chat_id = int(row["chat_id"])
-                    try:
-                        next_step = await send_withdrawal(bot, chat_id, int(row["withdrawal_step"]))
-                        storage.mark_promotion_sent(chat_id, next_step)
-                    except (TelegramAPIError, OSError, FileNotFoundError):
-                        logger.warning("Could not send scheduled image to chat %s", chat_id, exc_info=True)
-                        # Retry on the next interval rather than looping rapidly.
-                        storage.mark_promotion_sent(chat_id, (int(row["withdrawal_step"]) + 1) % len(WITHDRAWAL_IMAGES))
-            await asyncio.sleep(30)
 
     async def begin_promotion_for_user(bot: Bot, chat_id: int) -> None:
         await send_promotion_start(bot, chat_id)
@@ -151,9 +131,14 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
         await state.clear()
         storage.set_mode("promotion")
         users = storage.known_users()
+        storage.resume_promotions()
         sent = 0
+        resumed = 0
         failed = 0
         for chat_id in users:
+            if storage.has_promotion_schedule(chat_id):
+                resumed += 1
+                continue
             try:
                 await begin_promotion_for_user(message.bot, chat_id)
                 sent += 1
@@ -161,8 +146,8 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
                 failed += 1
                 logger.warning("Could not start promotion for chat %s", chat_id, exc_info=True)
         await message.answer(
-            f"Promotion mode enabled. Initial promotion sent to {sent} known chat(s); "
-            f"{failed} failed. New /start users will receive it too. "
+            f"Promotion mode enabled. Initial promotion sent to {sent} new chat(s); "
+            f"{resumed} existing schedule(s) resumed; {failed} failed. New /start users will receive it too. "
             "The follow-up is scheduled after 5 minutes, then withdrawal images rotate every 2 hours. "
             "Send REVERSE to pause promotions and restore the Star menu."
         )
