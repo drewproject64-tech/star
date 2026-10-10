@@ -9,6 +9,7 @@ from pathlib import Path
 from aiogram import Bot, Dispatcher, F
 from aiogram.exceptions import TelegramAPIError, TelegramForbiddenError, TelegramRetryAfter
 from aiogram.filters import Command, CommandStart
+from aiogram.filters.command import CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import BotCommand, CallbackQuery, ErrorEvent, InlineKeyboardButton, InlineKeyboardMarkup, Message
@@ -118,8 +119,31 @@ async def send_withdrawal(bot: Bot, chat_id: int, step: int) -> int:
     return (index + 1) % len(WITHDRAWAL_IMAGES)
 
 
+async def broadcast_text(bot: Bot, chat_ids: list[int], text: str) -> tuple[int, int]:
+    """Deliver only the explicit /send payload, without forwarding its command."""
+    sent = failed = 0
+    for chat_id in chat_ids:
+        if chat_id <= 0:
+            continue
+        while True:
+            try:
+                await bot.send_message(chat_id, text, parse_mode=None)
+            except TelegramRetryAfter as exc:
+                await asyncio.sleep(exc.retry_after)
+                continue
+            except TelegramAPIError:
+                failed += 1
+                logger.warning("Broadcast delivery failed for chat %s", chat_id, exc_info=True)
+            else:
+                sent += 1
+            break
+        await asyncio.sleep(0.05)
+    return sent, failed
+
+
 async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
     dp = Dispatcher()
+    broadcast_lock = asyncio.Lock()
 
     def is_admin(message: Message) -> bool:
         return bool(settings.admin_id and message.from_user and message.from_user.id == settings.admin_id)
@@ -165,6 +189,28 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
                 await message.answer("The first message could not be sent right now. Please try again later.")
             return
         await message.answer(home_text(), reply_markup=main_menu(), parse_mode="HTML")
+
+    @dp.message(Command("send"))
+    async def send_command(message: Message, state: FSMContext, command: CommandObject) -> None:
+        if not is_admin(message):
+            await message.answer("This command is only available to the configured administrator.")
+            return
+        if message.chat.type != "private":
+            await message.answer("Use /send in your private chat with the bot.")
+            return
+        text = (command.args or "").strip()
+        if not text:
+            await message.answer("Usage: /send hey hi, are you there?\nOnly the text after /send is broadcast.")
+            return
+        if broadcast_lock.locked():
+            await message.answer("A broadcast is already running. Wait for its delivery report before sending another.")
+            return
+        await state.clear()
+        async with broadcast_lock:
+            recipients = [chat_id for chat_id in storage.known_users() if chat_id > 0]
+            await message.answer(f"Broadcast started for {len(recipients)} saved users.")
+            sent, failed = await broadcast_text(message.bot, recipients, text)
+            await message.answer(f"Broadcast complete. Delivered: {sent}. Failed: {failed}.")
 
     @dp.message(Command("admin"))
     async def admin_command(message: Message) -> None:
@@ -368,6 +414,7 @@ async def main() -> None:
             BotCommand(command="start", description="Open the main menu"),
             BotCommand(command="help", description="Learn how to use the bot"),
             BotCommand(command="admin", description="Open administrator controls"),
+            BotCommand(command="send", description="Admin: broadcast message text"),
             BotCommand(command="redirect", description="Admin: enable promotion mode"),
             BotCommand(command="reverse", description="Admin: restore normal mode"),
         ])

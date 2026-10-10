@@ -10,6 +10,16 @@ Python 3.12 + aiogram 3.x Telegram bot with a normal Star menu and an admin-cont
 
 Admin commands require `ADMIN_ID` to match the administrator's Telegram numeric user ID.
 
+## Manual admin broadcast
+
+In the administrator's private chat with the bot, send:
+
+```
+/send hey hi, are you there?
+```
+
+Only the text after /send is delivered to previously saved private-chat users. Ordinary messages never trigger a broadcast. Empty /send commands show usage; non-admin users and group chats cannot broadcast. The command works in either mode and does not change the promotion schedule. /redirect and /reverse retain their mode-control behavior. The bot reports delivered and failed totals and rejects another /send while one is running. Blocked or unreachable users are counted as failed; Telegram rate limits are retried. Text is sent as plain text. Broadcasts run in memory and do not resume after a worker restart.
+
 ## Promotion assets
 
 The following files are loaded from the repository's `assets/` directory:
