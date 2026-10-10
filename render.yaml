@@ -1,0 +1,17 @@
+services:
+  - type: worker
+    name: star-bot
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python -m app.main
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: ADMIN_ID
+        sync: false
+      - key: DATABASE_PATH
+        value: /data/star.db
+    disk:
+      name: star-data
+      mountPath: /data
+      sizeGB: 1
