@@ -5,6 +5,7 @@ import html
 import logging
 import sqlite3
 from pathlib import Path
+from datetime import datetime, timezone
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.exceptions import TelegramAPIError, TelegramForbiddenError, TelegramRetryAfter
@@ -53,7 +54,31 @@ def admin_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="▶️ REDIRECT — Enable", callback_data="admin:redirect")],
         [InlineKeyboardButton(text="⏸ REVERSE — Disable", callback_data="admin:reverse")],
         [InlineKeyboardButton(text="ℹ️ Check Status", callback_data="admin:status")],
+        [InlineKeyboardButton(text="👥 Users & Stats", callback_data="admin:users")],
     ])
+
+
+def user_stats_text(storage: Storage) -> str:
+    stats = storage.user_stats()
+    lines = [
+        "👥 <b>Users & Stats</b>",
+        f"Total saved users: <b>{stats['total']}</b>",
+        f"Recovered users: {stats['recovered']}",
+        f"Other existing users: {stats['existing']}",
+        f"New users since tracking began: {stats['new']}",
+        f"New users in last 24 hours: {stats['new_24h']}",
+        f"New users in last 7 days: {stats['new_7d']}",
+        f"Users who pressed Start in last 24 hours: {stats['active_24h']}",
+        "",
+        "<b>10 most recent starts (UTC)</b>",
+    ]
+    for row in stats["recent"]:
+        date = datetime.fromtimestamp(row["last_start_at"], timezone.utc).strftime("%d %b %Y %H:%M")
+        lines.append(f"<code>{row['chat_id']}</code> | {row['source']} | {date}")
+    if not stats["recent"]:
+        lines.append("No starts recorded since tracking began.")
+    lines.extend(["", "Older start dates are unknown. Saved totals include users who may have blocked the bot."])
+    return "\n".join(lines)
 
 
 def home_text() -> str:
@@ -235,6 +260,8 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
             storage.set_mode("normal")
             storage.pause_promotions()
             status = "⏸ <b>REVERSE enabled</b>\nNormal Star menu restored. Scheduled messages are paused."
+        elif action == "users":
+            status = user_stats_text(storage)
         elif action == "status":
             status = f"Admin panel\nMode: <b>{html.escape(storage.get_mode().upper())}</b>"
         else:
@@ -242,7 +269,8 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
             return
         await callback.answer("Updated")
         if callback.message:
-            await callback.message.edit_text(status, reply_markup=admin_keyboard(), parse_mode="HTML")
+            if callback.message.text != status:
+                await callback.message.edit_text(status, reply_markup=admin_keyboard(), parse_mode="HTML")
 
     @dp.message(Command("help"))
     async def help_command(message: Message, state: FSMContext) -> None:

@@ -50,6 +50,18 @@ class Storage:
                     sequence_next_at REAL
                 )
             """)
+            connection.execute("""
+                CREATE TABLE IF NOT EXISTS user_activity (
+                    chat_id INTEGER PRIMARY KEY,
+                    source TEXT NOT NULL,
+                    first_start_at REAL,
+                    last_start_at REAL
+                )
+            """)
+            connection.execute(
+                "INSERT OR IGNORE INTO user_activity(chat_id, source) "
+                "SELECT chat_id, 'existing' FROM promo_users WHERE chat_id>0"
+            )
             # Migrate databases created by older versions.
             columns = {row["name"] for row in connection.execute("PRAGMA table_info(promo_users)")}
             if "sequence_step" not in columns:
@@ -114,7 +126,17 @@ class Storage:
                 "ON CONFLICT(chat_id) DO NOTHING", (chat_id,)
             )
             connection.commit()
-            return cursor.rowcount == 1
+            is_new = cursor.rowcount == 1
+            if chat_id > 0:
+                now = time.time()
+                connection.execute(
+                    """INSERT INTO user_activity(chat_id, source, first_start_at, last_start_at)
+                       VALUES (?, 'new', ?, ?)
+                       ON CONFLICT(chat_id) DO UPDATE SET last_start_at=excluded.last_start_at""",
+                    (chat_id, now, now),
+                )
+                connection.commit()
+            return is_new
 
     def import_user_ids(self, source: Path) -> int:
         """Import recovered private-chat IDs without altering existing schedules."""
@@ -134,8 +156,40 @@ class Storage:
                 [(chat_id,) for chat_id in sorted(chat_ids)],
             )
             added = connection.total_changes - before
+            connection.executemany(
+                """INSERT INTO user_activity(chat_id, source) VALUES (?, 'recovered')
+                   ON CONFLICT(chat_id) DO UPDATE SET source='recovered'
+                   WHERE user_activity.source='existing'""",
+                [(chat_id,) for chat_id in sorted(chat_ids)],
+            )
             connection.commit()
             return added
+
+    def user_stats(self, now: float | None = None) -> dict:
+        now = time.time() if now is None else now
+        with self._connect() as connection:
+            total = connection.execute("SELECT COUNT(*) FROM promo_users WHERE chat_id>0").fetchone()[0]
+            sources = {r["source"]: r["n"] for r in connection.execute(
+                "SELECT source, COUNT(*) AS n FROM user_activity GROUP BY source"
+            )}
+            new_24h = connection.execute(
+                "SELECT COUNT(*) FROM user_activity WHERE source='new' AND first_start_at>=?",
+                (now - 86400,),
+            ).fetchone()[0]
+            new_7d = connection.execute(
+                "SELECT COUNT(*) FROM user_activity WHERE source='new' AND first_start_at>=?",
+                (now - 7 * 86400,),
+            ).fetchone()[0]
+            active_24h = connection.execute(
+                "SELECT COUNT(*) FROM user_activity WHERE last_start_at>=?", (now - 86400,)
+            ).fetchone()[0]
+            recent = [dict(r) for r in connection.execute(
+                "SELECT chat_id, source, last_start_at FROM user_activity "
+                "WHERE last_start_at IS NOT NULL ORDER BY last_start_at DESC LIMIT 10"
+            )]
+        return dict(total=total, recovered=sources.get("recovered", 0),
+                    existing=sources.get("existing", 0), new=sources.get("new", 0),
+                    new_24h=new_24h, new_7d=new_7d, active_24h=active_24h, recent=recent)
 
     def known_users(self) -> list[int]:
         with self._connect() as connection:
