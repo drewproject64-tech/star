@@ -47,6 +47,14 @@ def registration_keyboard() -> InlineKeyboardMarkup:
     ]])
 
 
+def admin_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="▶️ REDIRECT — Enable", callback_data="admin:redirect")],
+        [InlineKeyboardButton(text="⏸ REVERSE — Disable", callback_data="admin:reverse")],
+        [InlineKeyboardButton(text="ℹ️ Check Status", callback_data="admin:status")],
+    ])
+
+
 def home_text() -> str:
     return (
         "⭐ <b>Star</b>\n\n"
@@ -115,6 +123,9 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
     def is_admin(message: Message) -> bool:
         return bool(settings.admin_id and message.from_user and message.from_user.id == settings.admin_id)
 
+    def is_admin_callback(callback: CallbackQuery) -> bool:
+        return bool(settings.admin_id and callback.from_user and callback.from_user.id == settings.admin_id)
+
 
     async def begin_promotion_for_user(bot: Bot, chat_id: int) -> None:
         await send_promotion_start(bot, chat_id, storage)
@@ -158,6 +169,39 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
                 await message.answer("The first message could not be sent right now. Please try again later.")
             return
         await message.answer(home_text(), reply_markup=main_menu(), parse_mode="HTML")
+
+    @dp.message(Command("admin"))
+    async def admin_command(message: Message) -> None:
+        if not is_admin(message):
+            await message.answer("Admin access denied. Set ADMIN_ID in Render to your numeric Telegram user ID, then redeploy.")
+            return
+        await message.answer(
+            f"Admin panel\nMode: <b>{html.escape(storage.get_mode().upper())}</b>",
+            reply_markup=admin_keyboard(), parse_mode="HTML",
+        )
+
+    @dp.callback_query(F.data.startswith("admin:"))
+    async def admin_actions(callback: CallbackQuery) -> None:
+        if not is_admin_callback(callback):
+            await callback.answer("Admin access denied.", show_alert=True)
+            return
+        action = callback.data.split(":", 1)[1]
+        if action == "redirect":
+            storage.pause_promotions()
+            storage.set_mode("promotion")
+            status = "✅ <b>REDIRECT enabled</b>\nNew users will see the configured flow. Existing users are not broadcast to."
+        elif action == "reverse":
+            storage.set_mode("normal")
+            storage.pause_promotions()
+            status = "⏸ <b>REVERSE enabled</b>\nNormal Star menu restored. Scheduled messages are paused."
+        elif action == "status":
+            status = f"Admin panel\nMode: <b>{html.escape(storage.get_mode().upper())}</b>"
+        else:
+            await callback.answer("Unknown action.", show_alert=True)
+            return
+        await callback.answer("Updated")
+        if callback.message:
+            await callback.message.edit_text(status, reply_markup=admin_keyboard(), parse_mode="HTML")
 
     @dp.message(Command("help"))
     async def help_command(message: Message, state: FSMContext) -> None:
@@ -328,6 +372,7 @@ async def main() -> None:
         await bot.set_my_commands([
             BotCommand(command="start", description="Open the main menu"),
             BotCommand(command="help", description="Learn how to use the bot"),
+            BotCommand(command="admin", description="Open administrator controls"),
             BotCommand(command="redirect", description="Admin: enable promotion mode"),
             BotCommand(command="reverse", description="Admin: restore normal mode"),
         ])
