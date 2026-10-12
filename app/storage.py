@@ -168,35 +168,31 @@ class Storage:
     def get_mode(self) -> str:
         with self._connect() as connection:
             row = connection.execute("SELECT value FROM bot_settings WHERE key='mode'").fetchone()
-            return row["value"] if row else "normal"
+            mode = row["value"] if row else "normal"
+            return "registration" if mode == "promotion" else mode
 
     def set_mode(self, mode: str) -> None:
-        if mode not in {"normal", "promotion"}:
+        if mode not in {"normal", "registration", "promotion"}:
             raise ValueError("Unsupported bot mode")
         with self._connect() as connection:
             connection.execute(
                 "INSERT INTO bot_settings(key, value) VALUES('mode', ?) "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                (mode,),
+                ("registration" if mode == "promotion" else mode,),
             )
             connection.commit()
 
     def activate_for_known_users(self, now: float | None = None) -> int:
-        """Enable promotion mode and queue the current sequence for saved private chats."""
-        now = time.time() if now is None else now
+        """Enable registration mode without broadcasting or deleting existing users."""
         with self._connect() as connection:
             connection.execute(
-                "INSERT INTO bot_settings(key, value) VALUES('mode', 'promotion') "
+                "INSERT INTO bot_settings(key, value) VALUES('mode', 'registration') "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value"
             )
             connection.execute("UPDATE promo_users SET enabled=0")
-            cursor = connection.execute(
-                """UPDATE promo_users SET enabled=1, sequence_step=0,
-                   sequence_next_at=?, bonus_at=NULL, next_promo_at=NULL
-                   WHERE chat_id>0""", (now + 5,)
-            )
+            count = connection.execute("SELECT COUNT(*) AS n FROM promo_users WHERE chat_id>0").fetchone()["n"]
             connection.commit()
-            return cursor.rowcount
+            return count
 
     def disable_user_schedule(self, chat_id: int) -> None:
         with self._connect() as connection:

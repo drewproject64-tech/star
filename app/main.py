@@ -18,17 +18,12 @@ from aiogram.types import FSInputFile
 
 from app.config import Settings
 from app.content import (
-    BONUS_DELAY_SECONDS,
-    BONUS_FOLLOWUP,
-    NEW_USER_SEQUENCE,
-    PROMOTION_INTERVAL_SECONDS,
     PROMOTIONS,
     REGISTRATION_CAPTION,
     REGISTRATION_HEADING,
     REGISTRATION_URL,
     START_CAPTION,
     UPDATES,
-    WITHDRAWAL_IMAGES,
     Item,
 )
 from app.keyboards import detail_menu, item_menu, main_menu, result_menu, submit_menu
@@ -127,26 +122,13 @@ def safe_index(data: str | None, prefix: str, count: int) -> int | None:
     return index if 0 <= index < count else None
 
 
-async def send_promotion_start(bot: Bot, chat_id: int, storage: Storage) -> None:
-    # Wait five seconds so the first message arrives shortly after /start.
-    await asyncio.sleep(5)
-    await bot.send_message(chat_id, NEW_USER_SEQUENCE[0])
-    storage.start_message_sequence(chat_id)
-
-
-async def send_withdrawal(bot: Bot, chat_id: int, step: int) -> int:
-    index = step % len(WITHDRAWAL_IMAGES)
-    relative_path, caption = WITHDRAWAL_IMAGES[index]
-    image_path = ROOT / relative_path
-    if not image_path.is_file():
-        raise FileNotFoundError(f"Required promotion image not found: {image_path}")
-    await bot.send_photo(
-        chat_id,
-        FSInputFile(image_path),
-        caption=caption,
-        reply_markup=registration_keyboard(),
-    )
-    return (index + 1) % len(WITHDRAWAL_IMAGES)
+async def send_registration(bot: Bot, chat_id: int) -> None:
+    text = f"{START_CAPTION}\n\n{REGISTRATION_CAPTION}"
+    image = ROOT / "assets" / "start.jpg"
+    if image.is_file():
+        await bot.send_photo(chat_id, FSInputFile(image), caption=text, reply_markup=registration_keyboard())
+    else:
+        await bot.send_message(chat_id, text, reply_markup=registration_keyboard())
 
 
 async def broadcast_text(bot: Bot, chat_ids: list[int], text: str) -> tuple[int, int]:
@@ -183,18 +165,18 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
 
 
     async def begin_promotion_for_user(bot: Bot, chat_id: int) -> None:
-        await send_promotion_start(bot, chat_id, storage)
+        await send_registration(bot, chat_id)
 
     async def activate_promotion(message: Message, state: FSMContext) -> None:
         if not is_admin(message):
             await message.answer("This command is only available to the configured administrator.")
             return
         await state.clear()
-        count = storage.activate_for_known_users()
+        storage.activate_for_known_users()
         await message.answer(
-            f"Promotion mode enabled. The current message sequence is queued for {count} previously recorded users. "
-            "New /start requests also receive the sequence. "
-            "Send REVERSE to pause scheduled promotions and restore the Star menu."
+            "Registration mode enabled. Users who send /start will see the registration message and button. "
+            "No automatic message sequence is sent. Use /send or Broadcast Message for manual broadcasts. "
+            "Send REVERSE to restore the Star menu."
         )
 
     async def deactivate_promotion(message: Message, state: FSMContext) -> None:
@@ -210,13 +192,13 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
     async def start(message: Message, state: FSMContext) -> None:
         await state.clear()
         is_new_user = storage.remember_user(message.chat.id) if message.chat else False
-        if storage.get_mode() == "promotion":
+        if storage.get_mode() == "registration":
             # /start is an explicit user action: show the opening message to anyone who requests it.
             try:
                 await begin_promotion_for_user(message.bot, message.chat.id)
             except (TelegramAPIError, OSError, FileNotFoundError):
-                logger.exception("Failed to send the first timed message")
-                await message.answer("The first message could not be sent right now. Please try again later.")
+                logger.exception("Failed to send registration message")
+                await message.answer("The registration message could not be sent right now. Please try again later.")
             return
         await message.answer(home_text(), reply_markup=main_menu(), parse_mode="HTML")
 
@@ -273,8 +255,8 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
             return
         await state.clear()
         if action == "redirect":
-            count = storage.activate_for_known_users()
-            status = f"✅ <b>REDIRECT enabled</b>\nCurrent sequence queued for {count} previously recorded users. New /start requests also receive it."
+            storage.activate_for_known_users()
+            status = "✅ <b>Registration mode enabled</b>\n/start shows the registration message and button. Automatic messages are disabled."
         elif action == "reverse":
             storage.set_mode("normal")
             storage.pause_promotions()
@@ -294,8 +276,8 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
     @dp.message(Command("help"))
     async def help_command(message: Message, state: FSMContext) -> None:
         await state.clear()
-        if storage.get_mode() == "promotion":
-            await message.answer("Promotion mode is active. Use the registration button in the promotion message.")
+        if storage.get_mode() == "registration":
+            await message.answer("Registration mode is active. Use /start to see the registration button.")
             return
         await message.answer(help_text(), reply_markup=main_menu(), parse_mode="HTML")
 
@@ -318,8 +300,8 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
     @dp.callback_query(F.data == "home")
     async def home(callback: CallbackQuery, state: FSMContext) -> None:
         await state.clear()
-        if storage.get_mode() == "promotion":
-            await callback.answer("Promotion mode is active.", show_alert=True)
+        if storage.get_mode() == "registration":
+            await callback.answer("Registration mode is active.", show_alert=True)
             return
         await callback.answer()
         if callback.message:
@@ -328,8 +310,8 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
     @dp.callback_query(F.data == "promotions")
     async def promotions(callback: CallbackQuery, state: FSMContext) -> None:
         await state.clear()
-        if storage.get_mode() == "promotion":
-            await callback.answer("Promotion mode is active.", show_alert=True)
+        if storage.get_mode() == "registration":
+            await callback.answer("Registration mode is active.", show_alert=True)
             return
         await callback.answer()
         if callback.message:
@@ -337,8 +319,8 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
 
     @dp.callback_query(F.data.startswith("promotion:"))
     async def promotion_item(callback: CallbackQuery) -> None:
-        if storage.get_mode() == "promotion":
-            await callback.answer("Promotion mode is active.", show_alert=True)
+        if storage.get_mode() == "registration":
+            await callback.answer("Registration mode is active.", show_alert=True)
             return
         index = safe_index(callback.data, "promotion", len(PROMOTIONS))
         if index is None:
@@ -351,8 +333,8 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
     @dp.callback_query(F.data == "updates")
     async def updates(callback: CallbackQuery, state: FSMContext) -> None:
         await state.clear()
-        if storage.get_mode() == "promotion":
-            await callback.answer("Promotion mode is active.", show_alert=True)
+        if storage.get_mode() == "registration":
+            await callback.answer("Registration mode is active.", show_alert=True)
             return
         await callback.answer()
         if callback.message:
@@ -360,8 +342,8 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
 
     @dp.callback_query(F.data.startswith("update:"))
     async def update_item(callback: CallbackQuery) -> None:
-        if storage.get_mode() == "promotion":
-            await callback.answer("Promotion mode is active.", show_alert=True)
+        if storage.get_mode() == "registration":
+            await callback.answer("Registration mode is active.", show_alert=True)
             return
         index = safe_index(callback.data, "update", len(UPDATES))
         if index is None:
@@ -373,8 +355,8 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
 
     @dp.callback_query(F.data == "submit")
     async def submit(callback: CallbackQuery, state: FSMContext) -> None:
-        if storage.get_mode() == "promotion":
-            await callback.answer("Promotion mode is active.", show_alert=True)
+        if storage.get_mode() == "registration":
+            await callback.answer("Registration mode is active.", show_alert=True)
             return
         await state.set_state(SubmitState.waiting_for_text)
         await callback.answer()
@@ -402,9 +384,9 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
 
     @dp.message(SubmitState.waiting_for_text)
     async def receive_submission(message: Message, state: FSMContext) -> None:
-        if storage.get_mode() == "promotion":
+        if storage.get_mode() == "registration":
             await state.clear()
-            await message.answer("Promotion mode is active. Normal submissions are paused.")
+            await message.answer("Registration mode is active. Normal submissions are paused.")
             return
         text = (message.text or "").strip()
         if not text:
@@ -453,8 +435,8 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
 
     @dp.message()
     async def fallback(message: Message, state: FSMContext) -> None:
-        if storage.get_mode() == "promotion":
-            await message.answer("Promotion mode is active. Use the registration button in the promotion message.")
+        if storage.get_mode() == "registration":
+            await message.answer("Registration mode is active. Use /start to see the registration button.")
             return
         if await state.get_state() == SubmitState.waiting_for_text:
             await message.answer("Please send submission text, or tap Main Menu to cancel.", reply_markup=submit_menu())
@@ -471,7 +453,7 @@ async def main() -> None:
     logger.info("Imported %s recovered users; total saved users: %s", imported, len(storage.known_users()))
     bot = Bot(token=settings.bot_token)
     dp = await build_dispatcher(storage, settings)
-    scheduler_task = asyncio.create_task(promotion_scheduler_runner(bot, storage))
+    storage.pause_promotions()  # Disable legacy automatic jobs without deleting users or data.
     logger.info("Starting Star bot")
     try:
         await bot.set_my_commands([
@@ -479,7 +461,7 @@ async def main() -> None:
             BotCommand(command="help", description="Learn how to use the bot"),
             BotCommand(command="admin", description="Open administrator controls"),
             BotCommand(command="send", description="Admin: broadcast message text"),
-            BotCommand(command="redirect", description="Admin: enable promotion mode"),
+            BotCommand(command="redirect", description="Admin: enable registration mode"),
             BotCommand(command="reverse", description="Admin: restore normal mode"),
         ])
         await bot.set_my_short_description("Promotions, updates and text submissions inside Telegram.")
@@ -487,65 +469,8 @@ async def main() -> None:
         await bot.delete_webhook(drop_pending_updates=True)
         await dp.start_polling(bot)
     finally:
-        scheduler_task.cancel()
-        await asyncio.gather(scheduler_task, return_exceptions=True)
         await bot.session.close()
         logger.info("Star bot stopped")
-
-
-async def promotion_scheduler_runner(bot: Bot, storage: Storage) -> None:
-    while True:
-        if storage.get_mode() == "promotion":
-            for row in storage.due_sequences():
-                chat_id = int(row["chat_id"])
-                step = int(row["sequence_step"])
-                try:
-                    if step < 0 or step >= len(NEW_USER_SEQUENCE):
-                        storage.mark_sequence_sent(chat_id, len(NEW_USER_SEQUENCE) - 1)
-                        continue
-                    message_text = NEW_USER_SEQUENCE[step]
-                    # Optional final image: add assets/research_final.jpg to show it with message five.
-                    if step == len(NEW_USER_SEQUENCE) - 1:
-                        final_image = ROOT / "assets" / "research_final.jpg"
-                        if final_image.is_file():
-                            await bot.send_photo(chat_id, FSInputFile(final_image), caption=message_text)
-                        else:
-                            await bot.send_message(chat_id, message_text)
-                    else:
-                        await bot.send_message(chat_id, message_text)
-                    storage.mark_sequence_sent(chat_id, step)
-                    await asyncio.sleep(0.05)
-                except TelegramForbiddenError:
-                    storage.disable_user_schedule(chat_id)
-                    logger.info("Stopped scheduling for unreachable chat %s", chat_id)
-                except TelegramRetryAfter as exc:
-                    await asyncio.sleep(exc.retry_after)
-                except TelegramAPIError:
-                    logger.warning("Could not send timed message %s to chat %s", step + 1, chat_id, exc_info=True)
-            for chat_id in storage.due_bonuses():
-                try:
-                    await bot.send_message(chat_id, BONUS_FOLLOWUP)
-                except TelegramAPIError:
-                    logger.warning("Could not send five-minute follow-up to chat %s", chat_id, exc_info=True)
-                finally:
-                    storage.mark_bonus_sent(chat_id)
-            for row in storage.due_promotions():
-                chat_id = int(row["chat_id"])
-                step = int(row["withdrawal_step"])
-                try:
-                    index = step % len(WITHDRAWAL_IMAGES)
-                    relative_path, caption = WITHDRAWAL_IMAGES[index]
-                    image_path = ROOT / relative_path
-                    if not image_path.is_file():
-                        raise FileNotFoundError(f"Required promotion image not found: {image_path}")
-                    await bot.send_photo(chat_id, FSInputFile(image_path), caption=caption, reply_markup=registration_keyboard())
-                    next_step = (index + 1) % len(WITHDRAWAL_IMAGES)
-                except (TelegramAPIError, OSError, FileNotFoundError):
-                    logger.warning("Could not send scheduled image to chat %s", chat_id, exc_info=True)
-                    next_step = (step + 1) % len(WITHDRAWAL_IMAGES)
-                finally:
-                    storage.mark_promotion_sent(chat_id, next_step)
-        await asyncio.sleep(1)
 
 
 if __name__ == "__main__":

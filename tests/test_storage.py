@@ -28,7 +28,8 @@ def test_sqlite_connections_close_and_data_persists(tmp_path, monkeypatch):
     assert not storage.remember_user(456)
     assert storage.add_submission(456, "user", "Test") == 1
     storage.activate_for_known_users(now=100)
-    assert len(storage.due_sequences(now=105)) == 3
+    assert storage.get_mode() == "registration"
+    assert not storage.due_sequences(now=105)
     storage.pause_promotions()
     assert not storage.due_sequences(now=1000)
     assert Storage(path).user_stats()["total"] == 3
@@ -59,7 +60,7 @@ def test_postgres_migration(tmp_path, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", database_url)
     storage = Storage(path)
     assert 8647561557 in storage.known_users()
-    assert storage.get_mode() == "promotion"
+    assert storage.get_mode() == "registration"
     assert storage.add_submission(8647561557, "user", "New") == 2
     storage.set_mode("normal")
     assert Storage(path).get_mode() == "normal"

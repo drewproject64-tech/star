@@ -1,72 +1,54 @@
-# Star Bot
+# Star Telegram Bot
 
-Python 3.12 + aiogram 3.x Telegram bot with a normal Star menu and an admin-controlled promotion mode.
+Python 3.12 and aiogram 3.x, deployed as a Render Background Worker with Telegram polling.
 
-## Modes
+## Modes and commands
 
-- Normal mode: Promotions, Updates and Submit Promotion remain available in Telegram.
-- Admin `REDIRECT`, `/redirect`, or the admin Enable button: enables promotion mode and queues the current five-message Turkish sequence for all previously recorded private-chat users. Each activation restarts that sequence from message one. Users do not need to send `/start` again. New `/start` requests also receive the sequence.
-- Admin `REVERSE` or `/reverse`: returns to normal mode and pauses scheduled promotion delivery. Existing rotation state remains stored so it can resume later.
+- `/start`: saves the user and opens the standard menu in normal mode. In registration mode, shows the original start image, registration text, and registration button.
+- `/help`: shows instructions.
+- `/admin`: administrator controls, Users & Stats, and Broadcast Message.
+- `/send MESSAGE`: admin-only manual text broadcast to saved private-chat users.
+- `/redirect` or `REDIRECT`: enables registration mode. It does not broadcast to saved users or run an automatic message sequence.
+- `/reverse` or `REVERSE`: restores the normal menu.
 
-Admin commands require `ADMIN_ID` to match the administrator's Telegram numeric user ID.
+The admin panel's REDIRECT and REVERSE buttons use the same mode behavior.
+Ordinary messages do not broadcast unless the admin has deliberately opened the Broadcast Message composer.
+The 10-minute rotating broadcast schedule is pending and is not implemented.
 
-## Manual admin broadcast
+## Saved users and data
 
-In the administrator's private chat with the bot, send:
+The existing database schema and all original image assets are retained.
+Startup imports `recovered_user_ids.txt` without duplicates; it contains 72 recovered IDs.
+Additional live users, statistics, submissions and settings live in the database, not GitHub.
+Keep the existing database and use the same Telegram bot identity.
+Blocked users cannot receive messages. Run only one polling service per bot token.
 
-```
-/send hey hi, are you there?
-```
-
-Only the text after /send is delivered to previously saved private-chat users. Ordinary messages never trigger a broadcast. Empty /send commands show usage; non-admin users and group chats cannot broadcast. The command works in either mode and does not change the promotion schedule. /redirect and /reverse retain their mode-control behavior. The bot reports delivered and failed totals and rejects another /send while one is running. Blocked or unreachable users are counted as failed; Telegram rate limits are retried. Text is sent as plain text. Broadcasts run in memory and do not resume after a worker restart.
-
-## Promotion assets
-
-The following files are loaded from the repository's `assets/` directory:
-
-- `assets/start.jpg`
-- `assets/withdrawal_257000.jpg`
-- `assets/withdrawal_320000.jpg`
-- `assets/withdrawal_239000.jpg`
-
-The current sequence starts approximately five seconds after activation. The subsequent delays are configured in `NEW_USER_SEQUENCE_DELAYS` in `app/content.py`. The scheduler checks every second and spaces bulk deliveries to limit request bursts; large audiences and Telegram rate limits can increase delivery times. The final message includes `assets/research_final.jpg` when available. Blocked users are disabled after Telegram rejects delivery.\n\nWithdrawal rotation helpers and assets remain in the repository, but the current sequence does not activate the two-hour rotation. Only users retained in the existing SQLite database can be reached.
-
-The follow-up and captions are defined in `app/content.py`. Ensure any claims or amounts shown in promotional text/images are accurate and authorized before deploying.
+Legacy promotion mode is interpreted as registration mode. Legacy scheduled jobs are disabled at startup;
+there is no automatic scheduler. Users and submissions are not deleted.
 
 ## Configuration
 
-Required: `BOT_TOKEN`
+- `BOT_TOKEN`: required Telegram bot token.
+- `ADMIN_ID`: administrator's numeric Telegram user ID.
+- `DATABASE_PATH`: SQLite file, default `data/star.db`; persistent Render disk path `/data/star.db`.
+- `DATABASE_URL`: optional PostgreSQL connection URL. Existing PostgreSQL support is retained. When set, it takes precedence over SQLite.
 
-Optional: `ADMIN_ID`, `DATABASE_PATH` (defaults to `data/star.db`)
+Keep secrets in Render environment settings, never in GitHub.
+SQLite needs a persistent disk to survive redeploys. PostgreSQL persists independently of the worker.
+If a local SQLite file survives at DATABASE_PATH, its data is migrated once to PostgreSQL.
+This code update does not switch or migrate the live database by itself.
 
-## Run locally
+## Deployment
 
-```bash
-python -m venv .venv
-pip install -r requirements.txt
-python -m app.main
-```
+Build: `pip install -r requirements.txt`
+Start: `python -m app.main`
 
-## Render
+Keep BOT_TOKEN, ADMIN_ID and existing database configuration unchanged.
+Render services connected to main may automatically deploy this update.
 
-This repo includes `render.yaml` for a Render Background Worker and persistent disk. Set `BOT_TOKEN` and `ADMIN_ID` in Render's environment settings. The bot uses polling and removes any existing webhook at startup.
+## Verification
 
-## Persistent PostgreSQL storage
+`python -m pytest -q tests`
 
-Set `DATABASE_URL` on the active Render worker to the Internal Database URL of
-a PostgreSQL database in the same workspace and region. Keep the URL in Render
-environment settings, never in GitHub. Without `DATABASE_URL`, SQLite is used.
-
-Startup creates the required tables and imports the recovered recipient list
-without duplicates. If a local SQLite file still exists at `DATABASE_PATH`,
-its users, mode, schedules and submissions are migrated once. Existing PostgreSQL
-rows take precedence. Previously lost SQLite data cannot be reconstructed
-except for the recovered IDs committed in this repository.
-
-PostgreSQL persists users and schedules independently of worker restarts.
-It does not increase the worker's RAM. SQLite connections are explicitly closed
-after every operation; PostgreSQL connections are also closed after use.
-
-Run `python -m pytest tests/test_storage.py` to verify the SQLite backend.
-To check the PostgreSQL backend against a disposable test database, set
-`TEST_DATABASE_URL` (never a production database).
+Registration/reverse behavior, saved users, manual broadcasts and SQLite connection closing are tested.
+The PostgreSQL migration test requires TEST_DATABASE_URL pointing to a disposable test database.
