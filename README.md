@@ -8,12 +8,12 @@ Python 3.12 and aiogram 3.x, deployed as a Render Background Worker with Telegra
 - `/help`: shows instructions.
 - `/admin`: administrator controls, Users & Stats, and Broadcast Message.
 - `/send MESSAGE`: admin-only manual text broadcast to saved private-chat users.
-- `/redirect` or `REDIRECT`: enables registration mode. It does not broadcast to saved users or run an automatic message sequence.
+- `/redirect` or `REDIRECT`: enables registration mode and waits for the administrator to tap Send Broadcast.
 - `/reverse` or `REVERSE`: restores the normal menu.
 
 The admin panel's REDIRECT and REVERSE buttons use the same mode behavior.
 Ordinary messages do not broadcast unless the admin has deliberately opened the Broadcast Message composer.
-The 10-minute rotating broadcast schedule is pending and is not implemented.
+In registration mode, tap **Send Broadcast** to start the configured three-image rotation for saved users. The first image is queued immediately; later images follow 10 minutes after each successful delivery. Order: Hold&Spin, Eternal Diamonds, Cashback, then repeat. New users who start during an active rotation are included. REVERSE stops it. **Custom Message** opens the text composer; `/send MESSAGE` remains available.
 
 ## Saved users and data
 
@@ -24,7 +24,7 @@ Keep the existing database and use the same Telegram bot identity.
 Blocked users cannot receive messages. Run only one polling service per bot token.
 
 Legacy promotion mode is interpreted as registration mode. Legacy scheduled jobs are disabled at startup;
-there is no automatic scheduler. Users and submissions are not deleted.
+the old text scheduler is removed. The image rotation uses its own persistent job table. Users and submissions are not deleted.
 
 ## Configuration
 
@@ -52,3 +52,13 @@ Render services connected to main may automatically deploy this update.
 
 Registration/reverse behavior, saved users, manual broadcasts and SQLite connection closing are tested.
 The PostgreSQL migration test requires TEST_DATABASE_URL pointing to a disposable test database.
+
+## Rotation assets
+
+- `assets/hold_spin.jpg`
+- `assets/eternal_diamonds.jpg`
+- `assets/cashback_40.jpg`
+
+Captions are Turkish and describe the supplied images. No recurring two-hour expiry claim is used.
+Progress and next delivery times persist in the configured database. Blocked recipients are disabled for the current rotation.
+Repeated Send Broadcast restarts the rotation at image one. Large audiences and Telegram rate limits can delay deliveries.

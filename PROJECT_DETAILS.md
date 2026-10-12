@@ -7,9 +7,12 @@ This update applies to star only. It preserves saved users, the recovered-ID fil
 the normal menu, admin statistics, manual broadcasts, image assets and existing database support.
 
 REDIRECT enables registration mode. /start displays the registration image and button.
+The admin then taps Send Broadcast to start the saved-user image rotation.
 REVERSE restores the normal menu.
 The old automatic message sequence and scheduler have been removed.
-A rotating broadcast at 10-minute intervals remains pending.
+The three-image rotation is implemented: Hold&Spin, Eternal Diamonds, Cashback, then repeat.
+Ten minutes separate successful deliveries per user. REVERSE stops the rotation.
+Custom Message and /send remain available for separate text broadcasts.
 
 The standard runtime is Python 3.12, aiogram 3.x and Telegram polling.
 Build command: pip install -r requirements.txt

@@ -19,6 +19,7 @@ from aiogram.types import FSInputFile
 from app.config import Settings
 from app.content import (
     PROMOTIONS,
+    ROTATION_MESSAGES,
     REGISTRATION_CAPTION,
     REGISTRATION_HEADING,
     REGISTRATION_URL,
@@ -54,7 +55,8 @@ def admin_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="⏸ REVERSE — Disable", callback_data="admin:reverse")],
         [InlineKeyboardButton(text="ℹ️ Check Status", callback_data="admin:status")],
         [InlineKeyboardButton(text="👥 Users & Stats", callback_data="admin:users")],
-        [InlineKeyboardButton(text="📣 Broadcast Message", callback_data="admin:broadcast")],
+        [InlineKeyboardButton(text="📣 Send Broadcast", callback_data="admin:broadcast")],
+        [InlineKeyboardButton(text="✍️ Custom Message", callback_data="admin:custombroadcast")],
     ])
 
 
@@ -172,11 +174,11 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
             await message.answer("This command is only available to the configured administrator.")
             return
         await state.clear()
-        storage.activate_for_known_users()
+        storage.enable_registration()
         await message.answer(
-            "Registration mode enabled. Users who send /start will see the registration message and button. "
-            "No automatic message sequence is sent. Use /send or Broadcast Message for manual broadcasts. "
-            "Send REVERSE to restore the Star menu."
+            "Registration mode enabled. Open /admin and tap Send Broadcast to start the "
+            "three-image rotation at 10-minute intervals. REDIRECT alone does not send broadcasts.",
+            reply_markup=admin_keyboard(),
         )
 
     async def deactivate_promotion(message: Message, state: FSMContext) -> None:
@@ -184,8 +186,7 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
             await message.answer("This command is only available to the configured administrator.")
             return
         await state.clear()
-        storage.set_mode("normal")
-        storage.pause_promotions()
+        storage.stop_rotation()
         await message.answer("Normal Star mode restored. Promotion scheduling is paused and saved assets remain in the repository.")
 
     @dp.message(CommandStart())
@@ -196,6 +197,7 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
             # /start is an explicit user action: show the opening message to anyone who requests it.
             try:
                 await begin_promotion_for_user(message.bot, message.chat.id)
+                storage.queue_rotation_for_user(message.chat.id)
             except (TelegramAPIError, OSError, FileNotFoundError):
                 logger.exception("Failed to send registration message")
                 await message.answer("The registration message could not be sent right now. Please try again later.")
@@ -242,6 +244,20 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
             return
         action = callback.data.split(":", 1)[1]
         if action == "broadcast":
+            if storage.get_mode() != "registration":
+                await callback.answer("Enable REDIRECT first.", show_alert=True)
+                return
+            await state.clear()
+            count = storage.activate_for_known_users()
+            await callback.answer("Broadcast started")
+            if callback.message:
+                await callback.message.answer(
+                    f"Image rotation started for {count} saved users. Hold&Spin → Eternal Diamonds → Cashback, "
+                    "10 minutes between messages. REVERSE stops the rotation.",
+                    reply_markup=admin_keyboard(),
+                )
+            return
+        if action == "custombroadcast":
             if not callback.message or callback.message.chat.type != "private":
                 await callback.answer("Use your private chat with the bot.", show_alert=True)
                 return
@@ -255,11 +271,10 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
             return
         await state.clear()
         if action == "redirect":
-            storage.activate_for_known_users()
-            status = "✅ <b>Registration mode enabled</b>\n/start shows the registration message and button. Automatic messages are disabled."
+            storage.enable_registration()
+            status = "✅ <b>Registration mode enabled</b>\nTap Send Broadcast to start the image rotation. Nothing is broadcast until you tap it."
         elif action == "reverse":
-            storage.set_mode("normal")
-            storage.pause_promotions()
+            storage.stop_rotation()
             status = "⏸ <b>REVERSE enabled</b>\nNormal Star menu restored. Scheduled messages are paused."
         elif action == "users":
             status = user_stats_text(storage)
@@ -454,6 +469,7 @@ async def main() -> None:
     bot = Bot(token=settings.bot_token)
     dp = await build_dispatcher(storage, settings)
     storage.pause_promotions()  # Disable legacy automatic jobs without deleting users or data.
+    scheduler_task = asyncio.create_task(rotation_scheduler_runner(bot, storage))
     logger.info("Starting Star bot")
     try:
         await bot.set_my_commands([
@@ -469,8 +485,45 @@ async def main() -> None:
         await bot.delete_webhook(drop_pending_updates=True)
         await dp.start_polling(bot)
     finally:
+        scheduler_task.cancel()
+        await asyncio.gather(scheduler_task, return_exceptions=True)
         await bot.session.close()
         logger.info("Star bot stopped")
+
+
+async def rotation_scheduler_runner(bot: Bot, storage: Storage) -> None:
+    while True:
+        try:
+            if storage.get_mode() == "registration" and storage.rotation_running():
+                for row in storage.due_rotation():
+                    if storage.get_mode() != "registration" or not storage.rotation_running():
+                        break
+                    chat_id, step, generation = int(row["chat_id"]), int(row["step"]), int(row["generation"])
+                    if not storage.rotation_job_is_current(chat_id, step, generation):
+                        continue
+                    path, caption = ROTATION_MESSAGES[step % len(ROTATION_MESSAGES)]
+                    try:
+                        await bot.send_photo(
+                            chat_id, FSInputFile(ROOT / path), caption=caption,
+                            reply_markup=registration_keyboard(),
+                        )
+                    except TelegramForbiddenError:
+                        storage.disable_rotation_user(chat_id, generation)
+                        logger.info("Image rotation disabled for unreachable chat %s", chat_id)
+                    except TelegramRetryAfter as exc:
+                        storage.retry_rotation_job(chat_id, generation, exc.retry_after)
+                        await asyncio.sleep(exc.retry_after)
+                    except (TelegramAPIError, OSError):
+                        storage.retry_rotation_job(chat_id, generation, 60)
+                        logger.warning("Image rotation delivery failed for chat %s", chat_id, exc_info=True)
+                    else:
+                        storage.finish_rotation_job(chat_id, step, generation)
+                        logger.info("Rotation image %s sent to chat %s", step + 1, chat_id)
+                    await asyncio.sleep(0.1)
+        except Exception:
+            logger.exception("Image rotation scheduler error; retrying")
+            await asyncio.sleep(5)
+        await asyncio.sleep(1)
 
 
 if __name__ == "__main__":

@@ -8,7 +8,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from app.content import BONUS_DELAY_SECONDS, PROMOTION_INTERVAL_SECONDS, NEW_USER_SEQUENCE_DELAYS, NEW_USER_SEQUENCE
+from app.content import BONUS_DELAY_SECONDS, PROMOTION_INTERVAL_SECONDS, NEW_USER_SEQUENCE_DELAYS, NEW_USER_SEQUENCE, ROTATION_INTERVAL_SECONDS, ROTATION_MESSAGES
 
 
 class PostgresConnection:
@@ -102,6 +102,15 @@ class Storage:
                 "SELECT chat_id, 'existing' FROM promo_users WHERE chat_id>0 "
                 "ON CONFLICT(chat_id) DO NOTHING"
             )
+            connection.execute("""
+                CREATE TABLE IF NOT EXISTS rotation_jobs (
+                    chat_id BIGINT PRIMARY KEY,
+                    step INTEGER NOT NULL DEFAULT 0,
+                    next_at DOUBLE PRECISION NOT NULL,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    generation INTEGER NOT NULL DEFAULT 1
+                )
+            """)
             # Migrate databases created by older versions.
             if self.postgres:
                 columns = {row["name"] for row in connection.execute(
@@ -127,7 +136,7 @@ class Storage:
             source.row_factory = sqlite3.Row
             try:
                 tables = {row["name"] for row in source.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-                for table in ("submissions", "promo_users", "user_activity", "bot_settings"):
+                for table in ("submissions", "promo_users", "user_activity", "bot_settings", "rotation_jobs"):
                     if table not in tables:
                         continue
                     for row in source.execute(f"SELECT * FROM {table}"):
@@ -182,17 +191,108 @@ class Storage:
             )
             connection.commit()
 
+    def enable_registration(self) -> None:
+        """Enter registration mode; wait for the explicit Send Broadcast action."""
+        self.stop_rotation()
+        self.set_mode("registration")
+
+    def rotation_running(self) -> bool:
+        with self._connect() as connection:
+            row = connection.execute("SELECT value FROM bot_settings WHERE key='rotation_running'").fetchone()
+            return bool(row and row["value"] == "1")
+
     def activate_for_known_users(self, now: float | None = None) -> int:
-        """Enable registration mode without broadcasting or deleting existing users."""
+        """Enable registration mode and restart the image rotation for saved users."""
+        now = time.time() if now is None else now
         with self._connect() as connection:
             connection.execute(
                 "INSERT INTO bot_settings(key, value) VALUES('mode', 'registration') "
                 "ON CONFLICT(key) DO UPDATE SET value=excluded.value"
             )
             connection.execute("UPDATE promo_users SET enabled=0")
+            connection.execute(
+                "INSERT INTO bot_settings(key, value) VALUES('rotation_running', '1') "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+            )
+            connection.execute(
+                """INSERT INTO rotation_jobs(chat_id, step, next_at, enabled, generation)
+                   SELECT chat_id, 0, ?, 1, 1 FROM promo_users WHERE chat_id>0
+                   ON CONFLICT(chat_id) DO UPDATE SET step=0, next_at=excluded.next_at,
+                   enabled=1, generation=rotation_jobs.generation+1""", (now,)
+            )
             count = connection.execute("SELECT COUNT(*) AS n FROM promo_users WHERE chat_id>0").fetchone()["n"]
             connection.commit()
             return count
+
+    def queue_rotation_for_user(self, chat_id: int, now: float | None = None) -> None:
+        if chat_id <= 0:
+            return
+        now = time.time() if now is None else now
+        with self._connect() as connection:
+            connection.execute(
+                """INSERT INTO rotation_jobs(chat_id, step, next_at, enabled)
+                   SELECT ?, 0, ?, 1 WHERE EXISTS(
+                       SELECT 1 FROM bot_settings WHERE key='rotation_running' AND value='1')
+                   ON CONFLICT(chat_id) DO UPDATE SET enabled=1""", (chat_id, now)
+            )
+            connection.commit()
+
+    def due_rotation(self, now: float | None = None) -> list:
+        now = time.time() if now is None else now
+        with self._connect() as connection:
+            return list(connection.execute(
+                "SELECT chat_id, step, generation FROM rotation_jobs "
+                "WHERE enabled=1 AND next_at<=? ORDER BY next_at, chat_id LIMIT 100", (now,)
+            ))
+
+    def rotation_job_is_current(self, chat_id: int, step: int, generation: int) -> bool:
+        with self._connect() as connection:
+            return bool(connection.execute(
+                "SELECT chat_id FROM rotation_jobs WHERE chat_id=? AND step=? AND generation=? AND enabled=1",
+                (chat_id, step, generation),
+            ).fetchone())
+
+    def finish_rotation_job(self, chat_id: int, step: int, generation: int,
+                            now: float | None = None) -> None:
+        now = time.time() if now is None else now
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE rotation_jobs SET step=?, next_at=? "
+                "WHERE chat_id=? AND step=? AND generation=? AND enabled=1",
+                ((step + 1) % len(ROTATION_MESSAGES), now + ROTATION_INTERVAL_SECONDS,
+                 chat_id, step, generation),
+            )
+            connection.commit()
+
+    def retry_rotation_job(self, chat_id: int, generation: int, delay: float) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE rotation_jobs SET next_at=? WHERE chat_id=? AND generation=?",
+                (time.time() + delay, chat_id, generation),
+            )
+            connection.commit()
+
+    def disable_rotation_user(self, chat_id: int, generation: int) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE rotation_jobs SET enabled=0 WHERE chat_id=? AND generation=?",
+                (chat_id, generation),
+            )
+            connection.commit()
+
+    def stop_rotation(self) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO bot_settings(key, value) VALUES('mode', 'normal') "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+            )
+            connection.execute(
+                "INSERT INTO bot_settings(key, value) VALUES('rotation_running', '0') "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+            )
+            connection.execute("UPDATE rotation_jobs SET enabled=0, generation=generation+1")
+            connection.execute("UPDATE promo_users SET enabled=0")
+            connection.commit()
 
     def disable_user_schedule(self, chat_id: int) -> None:
         with self._connect() as connection:
