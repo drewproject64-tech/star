@@ -50,3 +50,23 @@ python -m app.main
 ## Render
 
 This repo includes `render.yaml` for a Render Background Worker and persistent disk. Set `BOT_TOKEN` and `ADMIN_ID` in Render's environment settings. The bot uses polling and removes any existing webhook at startup.
+
+## Persistent PostgreSQL storage
+
+Set `DATABASE_URL` on the active Render worker to the Internal Database URL of
+a PostgreSQL database in the same workspace and region. Keep the URL in Render
+environment settings, never in GitHub. Without `DATABASE_URL`, SQLite is used.
+
+Startup creates the required tables and imports the recovered recipient list
+without duplicates. If a local SQLite file still exists at `DATABASE_PATH`,
+its users, mode, schedules and submissions are migrated once. Existing PostgreSQL
+rows take precedence. Previously lost SQLite data cannot be reconstructed
+except for the recovered IDs committed in this repository.
+
+PostgreSQL persists users and schedules independently of worker restarts.
+It does not increase the worker's RAM. SQLite connections are explicitly closed
+after every operation; PostgreSQL connections are also closed after use.
+
+Run `python -m pytest tests/test_storage.py` to verify the SQLite backend.
+To check the PostgreSQL backend against a disposable test database, set
+`TEST_DATABASE_URL` (never a production database).

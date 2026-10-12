@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import sqlite3
+import os
+from contextlib import contextmanager
+from typing import Iterator
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -8,26 +11,62 @@ from pathlib import Path
 from app.content import BONUS_DELAY_SECONDS, PROMOTION_INTERVAL_SECONDS, NEW_USER_SEQUENCE_DELAYS, NEW_USER_SEQUENCE
 
 
+class PostgresConnection:
+    """Expose the small connection API used by Storage for either database."""
+    def __init__(self, connection) -> None:
+        self.connection = connection
+
+    def execute(self, query: str, params=()):
+        return self.connection.execute(query.replace("?", "%s"), params)
+
+    def executemany(self, query: str, params):
+        cursor = self.connection.cursor()
+        cursor.executemany(query.replace("?", "%s"), params)
+        return cursor
+
+    def commit(self) -> None:
+        self.connection.commit()
+
+
 class Storage:
     """SQLite persistence for submissions, mode and per-user message schedules."""
 
     def __init__(self, path: str = "data/star.db") -> None:
         self.path = Path(path)
-        if str(self.path) != ":memory:":
+        self.database_url = os.getenv("DATABASE_URL", "").strip()
+        self.postgres = bool(self.database_url)
+        if self.postgres and not self.database_url.startswith(("postgres://", "postgresql://")):
+            raise ValueError("DATABASE_URL must be a PostgreSQL connection URL")
+        if not self.postgres and str(self.path) != ":memory:":
             self.path.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
+        if self.postgres:
+            self._migrate_sqlite()
 
-    def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path, timeout=30)
-        connection.row_factory = sqlite3.Row
-        return connection
+    @contextmanager
+    def _connect(self) -> Iterator:
+        # SQLite's own context manager commits but does not close the connection.
+        if self.postgres:
+            import psycopg
+            from psycopg.rows import dict_row
+            with psycopg.connect(self.database_url, row_factory=dict_row, connect_timeout=10) as raw:
+                yield PostgresConnection(raw)
+        else:
+            connection = sqlite3.connect(self.path, timeout=30)
+            connection.row_factory = sqlite3.Row
+            try:
+                with connection:
+                    yield connection
+            finally:
+                connection.close()
 
     def _initialize(self) -> None:
         with self._connect() as connection:
-            connection.execute("""
+            id_column = "BIGSERIAL PRIMARY KEY" if self.postgres else "INTEGER PRIMARY KEY AUTOINCREMENT"
+            connection.execute(f"""
                 CREATE TABLE IF NOT EXISTS submissions (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id INTEGER NOT NULL,
+                    id {id_column},
+                    user_id BIGINT NOT NULL,
                     username TEXT,
                     text TEXT NOT NULL,
                     created_at TEXT NOT NULL
@@ -41,44 +80,90 @@ class Storage:
             """)
             connection.execute("""
                 CREATE TABLE IF NOT EXISTS promo_users (
-                    chat_id INTEGER PRIMARY KEY,
-                    next_promo_at REAL,
-                    bonus_at REAL,
+                    chat_id BIGINT PRIMARY KEY,
+                    next_promo_at DOUBLE PRECISION,
+                    bonus_at DOUBLE PRECISION,
                     withdrawal_step INTEGER NOT NULL DEFAULT 0,
                     enabled INTEGER NOT NULL DEFAULT 0,
                     sequence_step INTEGER NOT NULL DEFAULT 0,
-                    sequence_next_at REAL
+                    sequence_next_at DOUBLE PRECISION
                 )
             """)
             connection.execute("""
                 CREATE TABLE IF NOT EXISTS user_activity (
-                    chat_id INTEGER PRIMARY KEY,
+                    chat_id BIGINT PRIMARY KEY,
                     source TEXT NOT NULL,
-                    first_start_at REAL,
-                    last_start_at REAL
+                    first_start_at DOUBLE PRECISION,
+                    last_start_at DOUBLE PRECISION
                 )
             """)
             connection.execute(
-                "INSERT OR IGNORE INTO user_activity(chat_id, source) "
-                "SELECT chat_id, 'existing' FROM promo_users WHERE chat_id>0"
+                "INSERT INTO user_activity(chat_id, source) "
+                "SELECT chat_id, 'existing' FROM promo_users WHERE chat_id>0 "
+                "ON CONFLICT(chat_id) DO NOTHING"
             )
             # Migrate databases created by older versions.
-            columns = {row["name"] for row in connection.execute("PRAGMA table_info(promo_users)")}
+            if self.postgres:
+                columns = {row["name"] for row in connection.execute(
+                    "SELECT column_name AS name FROM information_schema.columns "
+                    "WHERE table_schema='public' AND table_name='promo_users'"
+                )}
+            else:
+                columns = {row["name"] for row in connection.execute("PRAGMA table_info(promo_users)")}
             if "sequence_step" not in columns:
                 connection.execute("ALTER TABLE promo_users ADD COLUMN sequence_step INTEGER NOT NULL DEFAULT 0")
             if "sequence_next_at" not in columns:
-                connection.execute("ALTER TABLE promo_users ADD COLUMN sequence_next_at REAL")
+                connection.execute("ALTER TABLE promo_users ADD COLUMN sequence_next_at DOUBLE PRECISION")
             connection.commit()
+
+    def _migrate_sqlite(self) -> None:
+        """Copy surviving local data once; never overwrite newer PostgreSQL rows."""
+        if not self.path.is_file():
+            return
+        with self._connect() as target:
+            if target.execute("SELECT value FROM bot_settings WHERE key='sqlite_migration_done'").fetchone():
+                return
+            source = sqlite3.connect(f"{self.path.resolve().as_uri()}?mode=ro", uri=True)
+            source.row_factory = sqlite3.Row
+            try:
+                tables = {row["name"] for row in source.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                for table in ("submissions", "promo_users", "user_activity", "bot_settings"):
+                    if table not in tables:
+                        continue
+                    for row in source.execute(f"SELECT * FROM {table}"):
+                        columns = list(row.keys())
+                        placeholders = ", ".join("?" for _ in columns)
+                        target.execute(
+                            f"INSERT INTO {table} ({', '.join(columns)}) VALUES ({placeholders}) ON CONFLICT DO NOTHING",
+                            tuple(row),
+                        )
+                target.execute(
+                    "SELECT setval(pg_get_serial_sequence('submissions', 'id'), "
+                    "COALESCE((SELECT MAX(id) FROM submissions), 1), "
+                    "EXISTS(SELECT 1 FROM submissions))"
+                )
+                target.execute(
+                    "INSERT INTO user_activity(chat_id, source) "
+                    "SELECT chat_id, 'existing' FROM promo_users WHERE chat_id>0 ON CONFLICT DO NOTHING"
+                )
+                target.execute(
+                    "INSERT INTO bot_settings(key, value) VALUES('sqlite_migration_done', '1') "
+                    "ON CONFLICT(key) DO NOTHING"
+                )
+                target.commit()
+            finally:
+                source.close()
 
     def add_submission(self, user_id: int, username: str | None, text: str) -> int:
         created_at = datetime.now(timezone.utc).isoformat()
         with self._connect() as connection:
             cursor = connection.execute(
-                "INSERT INTO submissions(user_id, username, text, created_at) VALUES (?, ?, ?, ?)",
+                "INSERT INTO submissions(user_id, username, text, created_at) VALUES (?, ?, ?, ?) RETURNING id",
                 (user_id, username, text, created_at),
             )
+            submission_id = int(cursor.fetchone()["id"])
             connection.commit()
-            return int(cursor.lastrowid)
+            return submission_id
 
     def get_mode(self) -> str:
         with self._connect() as connection:
@@ -149,13 +234,12 @@ class Storage:
         if any(chat_id <= 0 for chat_id in chat_ids):
             raise ValueError("Recovered user IDs must be positive private-chat IDs")
         with self._connect() as connection:
-            before = connection.total_changes
-            connection.executemany(
+            cursor = connection.executemany(
                 "INSERT INTO promo_users(chat_id, enabled) VALUES (?, 0) "
                 "ON CONFLICT(chat_id) DO NOTHING",
                 [(chat_id,) for chat_id in sorted(chat_ids)],
             )
-            added = connection.total_changes - before
+            added = cursor.rowcount
             connection.executemany(
                 """INSERT INTO user_activity(chat_id, source) VALUES (?, 'recovered')
                    ON CONFLICT(chat_id) DO UPDATE SET source='recovered'
@@ -168,21 +252,21 @@ class Storage:
     def user_stats(self, now: float | None = None) -> dict:
         now = time.time() if now is None else now
         with self._connect() as connection:
-            total = connection.execute("SELECT COUNT(*) FROM promo_users WHERE chat_id>0").fetchone()[0]
+            total = connection.execute("SELECT COUNT(*) AS n FROM promo_users WHERE chat_id>0").fetchone()["n"]
             sources = {r["source"]: r["n"] for r in connection.execute(
                 "SELECT source, COUNT(*) AS n FROM user_activity GROUP BY source"
             )}
             new_24h = connection.execute(
-                "SELECT COUNT(*) FROM user_activity WHERE source='new' AND first_start_at>=?",
+                "SELECT COUNT(*) AS n FROM user_activity WHERE source='new' AND first_start_at>=?",
                 (now - 86400,),
-            ).fetchone()[0]
+            ).fetchone()["n"]
             new_7d = connection.execute(
-                "SELECT COUNT(*) FROM user_activity WHERE source='new' AND first_start_at>=?",
+                "SELECT COUNT(*) AS n FROM user_activity WHERE source='new' AND first_start_at>=?",
                 (now - 7 * 86400,),
-            ).fetchone()[0]
+            ).fetchone()["n"]
             active_24h = connection.execute(
-                "SELECT COUNT(*) FROM user_activity WHERE last_start_at>=?", (now - 86400,)
-            ).fetchone()[0]
+                "SELECT COUNT(*) AS n FROM user_activity WHERE last_start_at>=?", (now - 86400,)
+            ).fetchone()["n"]
             recent = [dict(r) for r in connection.execute(
                 "SELECT chat_id, source, last_start_at FROM user_activity "
                 "WHERE last_start_at IS NOT NULL ORDER BY last_start_at DESC LIMIT 10"
