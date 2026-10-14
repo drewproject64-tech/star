@@ -177,7 +177,7 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
         storage.enable_registration()
         await message.answer(
             "Registration mode enabled. Open /admin and tap Send Broadcast to start the "
-            "three-image rotation at 10-minute intervals. REDIRECT alone does not send broadcasts.",
+            "three-image rotation at two-hour intervals. REDIRECT alone does not send broadcasts.",
             reply_markup=admin_keyboard(),
         )
 
@@ -252,8 +252,8 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
             await callback.answer("Broadcast started")
             if callback.message:
                 await callback.message.answer(
-                    f"Image rotation started for {count} saved users. Hold&Spin → Eternal Diamonds → Cashback, "
-                    "10 minutes between messages. REVERSE stops the rotation.",
+                    f"Image rotation started for {count} saved users. 257,000 TL → 320,000 TL → 239,000 TL, "
+                    "2 hours between messages. REVERSE stops the rotation.",
                     reply_markup=admin_keyboard(),
                 )
             return

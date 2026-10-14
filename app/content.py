@@ -32,10 +32,10 @@ UPDATES = (
     Item("Submission Status", "Each accepted submission is saved and assigned a reference number."),
 )
 
-# Rotating broadcast assets, in the requested order.
-ROTATION_INTERVAL_SECONDS = 10 * 60
+# Original withdrawal images, rotating every two hours.
+ROTATION_INTERVAL_SECONDS = 2 * 60 * 60
 ROTATION_MESSAGES = (
-    ("assets/hold_spin.jpg", "Floating Dragon Hold&Spin Mobile: Paylaşılan görselde 1 $ bahis ve 5.000 $ kazanç gösteriliyor."),
-    ("assets/eternal_diamonds.jpg", "Eternal Diamonds: Paylaşılan görselde 2 $ bahis ve 5.506 $ kazanç gösteriliyor."),
-    ("assets/cashback_40.jpg", "Paylaşılan kampanya görseli: %40'a varan para iadesi. Kampanya koşulları geçerlidir."),
+    ("assets/withdrawal_257000.jpg", "💬 Paylaşılan çekim görseli: 257.000 TL"),
+    ("assets/withdrawal_320000.jpg", "💬 Paylaşılan çekim görseli: 320.000 TL"),
+    ("assets/withdrawal_239000.jpg", "💬 Paylaşılan çekim görseli: 239.000 TL"),
 )

@@ -13,7 +13,7 @@ Python 3.12 and aiogram 3.x, deployed as a Render Background Worker with Telegra
 
 The admin panel's REDIRECT and REVERSE buttons use the same mode behavior.
 Ordinary messages do not broadcast unless the admin has deliberately opened the Broadcast Message composer.
-In registration mode, tap **Send Broadcast** to start the configured three-image rotation for saved users. The first image is queued immediately; later images follow 10 minutes after each successful delivery. Order: Hold&Spin, Eternal Diamonds, Cashback, then repeat. New users who start during an active rotation are included. REVERSE stops it. **Custom Message** opens the text composer; `/send MESSAGE` remains available.
+In registration mode, tap **Send Broadcast** to start the configured three-image rotation for saved users. The first image is queued immediately; later images follow 2 hours after each successful delivery. Order: 257,000 TL, 320,000 TL, 239,000 TL, then repeat. New users who start during an active rotation are included. REVERSE stops it. **Custom Message** opens the text composer; `/send MESSAGE` remains available.
 
 ## Saved users and data
 
@@ -55,9 +55,9 @@ The PostgreSQL migration test requires TEST_DATABASE_URL pointing to a disposabl
 
 ## Rotation assets
 
-- `assets/hold_spin.jpg`
-- `assets/eternal_diamonds.jpg`
-- `assets/cashback_40.jpg`
+- `assets/withdrawal_257000.jpg`
+- `assets/withdrawal_320000.jpg`
+- `assets/withdrawal_239000.jpg`
 
 Captions are Turkish and describe the supplied images. No recurring two-hour expiry claim is used.
 Progress and next delivery times persist in the configured database. Blocked recipients are disabled for the current rotation.

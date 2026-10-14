@@ -2,7 +2,7 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from app.config import Settings
-from app.content import ROTATION_MESSAGES
+from app.content import ROTATION_MESSAGES, ROTATION_INTERVAL_SECONDS
 from app.main import build_dispatcher
 from app.storage import Storage
 
@@ -16,16 +16,19 @@ def test_rotation(tmp_path, monkeypatch):
     assert not s.due_rotation(now=100)
     s.activate_for_known_users(now=100)
     for step in range(3):
-        now = 100 + step * 600
+        now = 100 + step * 7200
         row = s.due_rotation(now=now)[0]
         assert row["step"] == step
         s.finish_rotation_job(123, step, row["generation"], now=now)
-        assert not s.due_rotation(now=now+599)
-    assert Storage(str(tmp_path / "users.db")).due_rotation(now=1900)[0]["step"] == 0
+        assert not s.due_rotation(now=now+7199)
+    assert Storage(str(tmp_path / "users.db")).due_rotation(now=21700)[0]["step"] == 0
     s.stop_rotation()
     assert not s.due_rotation(now=99999)
     assert s.known_users() == [123]
-    assert len(ROTATION_MESSAGES) == 3
+    assert ROTATION_INTERVAL_SECONDS == 7200
+    assert [path for path, _ in ROTATION_MESSAGES] == [
+        "assets/withdrawal_257000.jpg", "assets/withdrawal_320000.jpg", "assets/withdrawal_239000.jpg"
+    ]
 
 def test_button(tmp_path, monkeypatch):
     monkeypatch.delenv("DATABASE_URL", raising=False)
