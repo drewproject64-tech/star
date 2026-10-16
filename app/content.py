@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-REGISTRATION_URL = "https://strz.cc/CoxW"
+REGISTRATION_URL = "https://strz.ac/CoxW"
 REGISTRATION_HEADING = "✨✨ 𝑩𝑼𝑹𝑨𝑫𝑨𝑵 𝑲𝑨𝒀𝑰𝑻 𝑶𝑳 ✨✨"
 REGISTRATION_CAPTION = "Kayıt olmak için aşağıdaki butona dokunun."
 START_CAPTION = "🌟 Starz'a hoş geldiniz! Güncel kampanya bilgilerini ve kayıt seçeneklerini aşağıdan inceleyebilirsiniz."
