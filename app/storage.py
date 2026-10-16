@@ -111,6 +111,15 @@ class Storage:
                     generation INTEGER NOT NULL DEFAULT 1
                 )
             """)
+            connection.execute("""
+                CREATE TABLE IF NOT EXISTS account_deliveries (
+                    campaign_id TEXT NOT NULL,
+                    chat_id BIGINT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    next_at DOUBLE PRECISION NOT NULL,
+                    PRIMARY KEY(campaign_id, chat_id)
+                )
+            """)
             # Migrate databases created by older versions.
             if self.postgres:
                 columns = {row["name"] for row in connection.execute(
@@ -136,7 +145,7 @@ class Storage:
             source.row_factory = sqlite3.Row
             try:
                 tables = {row["name"] for row in source.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-                for table in ("submissions", "promo_users", "user_activity", "bot_settings", "rotation_jobs"):
+                for table in ("submissions", "promo_users", "user_activity", "bot_settings", "rotation_jobs", "account_deliveries"):
                     if table not in tables:
                         continue
                     for row in source.execute(f"SELECT * FROM {table}"):
@@ -162,6 +171,40 @@ class Storage:
                 target.commit()
             finally:
                 source.close()
+
+    def queue_account_notice(self, campaign_id: str, now: float | None = None) -> None:
+        """Queue once for all current users; restarts never requeue completed deliveries."""
+        now = time.time() if now is None else now
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO account_deliveries(campaign_id, chat_id, next_at) "
+                "SELECT ?, chat_id, ? FROM promo_users WHERE chat_id>0 "
+                "ON CONFLICT(campaign_id, chat_id) DO NOTHING", (campaign_id, now)
+            )
+
+    def due_account_notices(self, campaign_id: str, now: float | None = None) -> list:
+        now = time.time() if now is None else now
+        with self._connect() as connection:
+            return list(connection.execute(
+                "SELECT chat_id FROM account_deliveries WHERE campaign_id=? "
+                "AND status='pending' AND next_at<=? ORDER BY next_at, chat_id LIMIT 100",
+                (campaign_id, now),
+            ))
+
+    def finish_account_notice(self, campaign_id: str, chat_id: int, status: str = "sent") -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "INSERT INTO account_deliveries(campaign_id, chat_id, status, next_at) VALUES (?, ?, ?, 0) "
+                "ON CONFLICT(campaign_id, chat_id) DO UPDATE SET status=excluded.status",
+                (campaign_id, chat_id, status),
+            )
+
+    def retry_account_notice(self, campaign_id: str, chat_id: int, delay: float) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE account_deliveries SET next_at=? WHERE campaign_id=? AND chat_id=? AND status='pending'",
+                (time.time() + max(1, delay), campaign_id, chat_id),
+            )
 
     def add_submission(self, user_id: int, username: str | None, text: str) -> int:
         created_at = datetime.now(timezone.utc).isoformat()

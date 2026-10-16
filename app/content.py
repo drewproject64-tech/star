@@ -2,7 +2,13 @@ from dataclasses import dataclass
 
 REGISTRATION_URL = "https://strz.ac/CoxW"
 REGISTRATION_HEADING = "✨✨ 𝑩𝑼𝑹𝑨𝑫𝑨𝑵 𝑲𝑨𝒀𝑰𝑻 𝑶𝑳 ✨✨"
-REGISTRATION_CAPTION = "Kayıt olmak için aşağıdaki butona dokunun."
+ACCOUNT_CAMPAIGN_ID = "account-access-2026-10-16"
+ACCOUNT_ACCESS_MESSAGE = (
+    "🔗 Eski bağlantımız artık aktif değil, ancak merak etmeyin! Hesabınıza erişmek, "
+    "kaldığınız yerden devam etmek ve size özel teklifleri keşfetmek için yeni bağlantımızı kullanın:\n\n"
+    + REGISTRATION_URL
+)
+REGISTRATION_CAPTION = ACCOUNT_ACCESS_MESSAGE
 START_CAPTION = "🌟 Starz'a hoş geldiniz! Güncel kampanya bilgilerini ve kayıt seçeneklerini aşağıdan inceleyebilirsiniz."
 
 # Compatibility constants for existing stored schedules. Automatic delivery is disabled.
@@ -32,10 +38,11 @@ UPDATES = (
     Item("Submission Status", "Each accepted submission is saved and assigned a reference number."),
 )
 
-# Original withdrawal images, rotating every two hours.
+# Withdrawal images and the account notice, one message every two hours.
 ROTATION_INTERVAL_SECONDS = 2 * 60 * 60
 ROTATION_MESSAGES = (
     ("assets/withdrawal_257000.jpg", "💬 Paylaşılan çekim görseli: 257.000 TL"),
     ("assets/withdrawal_320000.jpg", "💬 Paylaşılan çekim görseli: 320.000 TL"),
     ("assets/withdrawal_239000.jpg", "💬 Paylaşılan çekim görseli: 239.000 TL"),
+    (None, ACCOUNT_ACCESS_MESSAGE),
 )

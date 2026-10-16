@@ -20,6 +20,8 @@ from aiogram.types import FSInputFile
 
 from app.config import Settings
 from app.content import (
+    ACCOUNT_CAMPAIGN_ID,
+    ACCOUNT_ACCESS_MESSAGE,
     PROMOTIONS,
     ROTATION_MESSAGES,
     REGISTRATION_CAPTION,
@@ -34,6 +36,8 @@ from app.storage import Storage
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
 logger = logging.getLogger("star_bot")
+# Serialize a start response with the one-off campaign to avoid duplicate concurrent sends.
+account_delivery_lock = asyncio.Lock()
 ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -47,7 +51,7 @@ class SubmitState(StatesGroup):
 
 def registration_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="✨ 𝑩𝑼𝑹𝑨𝑫𝑨𝑵 𝑲𝑨𝒀𝑰𝑻 𝑶𝑳 ✨", url=REGISTRATION_URL)
+        InlineKeyboardButton(text="🔗 Hesabıma eriş", url=REGISTRATION_URL)
     ]])
 
 
@@ -204,7 +208,9 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
 
 
     async def begin_promotion_for_user(bot: Bot, chat_id: int) -> None:
-        await send_registration(bot, chat_id)
+        async with account_delivery_lock:
+            await send_registration(bot, chat_id)
+            storage.finish_account_notice(ACCOUNT_CAMPAIGN_ID, chat_id)
 
     async def activate_promotion(message: Message, state: FSMContext) -> None:
         if not is_admin(message):
@@ -214,7 +220,7 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
         storage.enable_registration()
         await message.answer(
             "Registration mode enabled. Open /admin and tap Send Broadcast to start the "
-            "three-image rotation at two-hour intervals. REDIRECT alone does not send broadcasts.",
+            "four-message rotation at two-hour intervals. REDIRECT alone does not send broadcasts.",
             reply_markup=admin_keyboard(),
         )
 
@@ -230,6 +236,8 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
     async def start(message: Message, state: FSMContext) -> None:
         await state.clear()
         is_new_user = storage.remember_user(message.chat.id) if message.chat else False
+        if message.chat and message.chat.type == "private":
+            logger.info("Start recorded for chat %s; new=%s", message.chat.id, is_new_user)
         if storage.get_mode() == "registration":
             # /start is an explicit user action: show the opening message to anyone who requests it.
             try:
@@ -291,7 +299,7 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
             await callback.answer("Broadcast started")
             if callback.message:
                 await callback.message.answer(
-                    f"Image rotation started for {count} saved users. 257,000 TL → 320,000 TL → 239,000 TL, "
+                    f"Rotation started for {count} saved users. 257,000 TL → 320,000 TL → 239,000 TL → account access notice, "
                     "2 hours between messages. REVERSE stops the rotation.",
                     reply_markup=admin_keyboard(),
                 )
@@ -311,7 +319,7 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
         await state.clear()
         if action == "redirect":
             storage.enable_registration()
-            status = "✅ <b>Registration mode enabled</b>\nTap Send Broadcast to start the image rotation. Nothing is broadcast until you tap it."
+            status = "✅ <b>Registration mode enabled</b>\nTap Send Broadcast to start the four-message rotation. Nothing is broadcast until you tap it."
         elif action == "reverse":
             storage.stop_rotation()
             status = "⏸ <b>REVERSE enabled</b>\nNormal Star menu restored. Scheduled messages are paused."
@@ -552,7 +560,10 @@ async def main() -> None:
     bot = Bot(token=settings.bot_token)
     dp = await build_dispatcher(storage, settings)
     storage.pause_promotions()  # Disable legacy automatic jobs without deleting users or data.
+    # User-authorized account-link announcement; persistent completion records prevent replay.
+    storage.queue_account_notice(ACCOUNT_CAMPAIGN_ID)
     scheduler_task = asyncio.create_task(rotation_scheduler_runner(bot, storage))
+    account_task = asyncio.create_task(account_notice_runner(bot, storage))
     logger.info("Starting Star bot")
     try:
         await bot.set_my_commands([
@@ -569,9 +580,43 @@ async def main() -> None:
         await dp.start_polling(bot)
     finally:
         scheduler_task.cancel()
-        await asyncio.gather(scheduler_task, return_exceptions=True)
+        account_task.cancel()
+        await asyncio.gather(scheduler_task, account_task, return_exceptions=True)
         await bot.session.close()
         logger.info("Star bot stopped")
+
+
+async def deliver_account_notices(bot: Bot, storage: Storage) -> None:
+    for row in storage.due_account_notices(ACCOUNT_CAMPAIGN_ID):
+        chat_id = int(row["chat_id"])
+        async with account_delivery_lock:
+            # /start may already have delivered this notice since the batch was loaded.
+            if chat_id not in {int(r["chat_id"]) for r in storage.due_account_notices(ACCOUNT_CAMPAIGN_ID)}:
+                continue
+            try:
+                await bot.send_message(chat_id, ACCOUNT_ACCESS_MESSAGE, reply_markup=registration_keyboard(), parse_mode=None)
+            except TelegramForbiddenError:
+                storage.finish_account_notice(ACCOUNT_CAMPAIGN_ID, chat_id, "blocked")
+                logger.info("Account notice unreachable for chat %s", chat_id)
+            except TelegramRetryAfter as exc:
+                storage.retry_account_notice(ACCOUNT_CAMPAIGN_ID, chat_id, exc.retry_after)
+                await asyncio.sleep(exc.retry_after)
+            except TelegramAPIError:
+                storage.retry_account_notice(ACCOUNT_CAMPAIGN_ID, chat_id, 60)
+                logger.warning("Account notice failed for chat %s; retry scheduled", chat_id)
+            else:
+                storage.finish_account_notice(ACCOUNT_CAMPAIGN_ID, chat_id)
+                logger.info("Account notice sent to chat %s", chat_id)
+        await asyncio.sleep(0.1)
+
+
+async def account_notice_runner(bot: Bot, storage: Storage) -> None:
+    while True:
+        try:
+            await deliver_account_notices(bot, storage)
+        except Exception:
+            logger.exception("Account notice scheduler failed; retrying")
+        await asyncio.sleep(5)
 
 
 async def rotation_scheduler_runner(bot: Bot, storage: Storage) -> None:
@@ -586,10 +631,15 @@ async def rotation_scheduler_runner(bot: Bot, storage: Storage) -> None:
                         continue
                     path, caption = ROTATION_MESSAGES[step % len(ROTATION_MESSAGES)]
                     try:
-                        await bot.send_photo(
-                            chat_id, FSInputFile(ROOT / path), caption=caption,
-                            reply_markup=registration_keyboard(),
-                        )
+                        if path:
+                            await bot.send_photo(
+                                chat_id, FSInputFile(ROOT / path), caption=caption,
+                                reply_markup=registration_keyboard(),
+                            )
+                        else:
+                            await bot.send_message(
+                                chat_id, caption, reply_markup=registration_keyboard(), parse_mode=None,
+                            )
                     except TelegramForbiddenError:
                         storage.disable_rotation_user(chat_id, generation)
                         logger.info("Image rotation disabled for unreachable chat %s", chat_id)
@@ -601,7 +651,7 @@ async def rotation_scheduler_runner(bot: Bot, storage: Storage) -> None:
                         logger.warning("Image rotation delivery failed for chat %s", chat_id, exc_info=True)
                     else:
                         storage.finish_rotation_job(chat_id, step, generation)
-                        logger.info("Rotation image %s sent to chat %s", step + 1, chat_id)
+                        logger.info("Rotation message %s sent to chat %s", step + 1, chat_id)
                     await asyncio.sleep(0.1)
         except Exception:
             logger.exception("Image rotation scheduler error; retrying")
