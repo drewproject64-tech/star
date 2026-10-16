@@ -5,6 +5,9 @@ from unittest.mock import AsyncMock
 from aiogram.filters.command import CommandObject
 from app.config import Settings
 from app.main import build_dispatcher
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.fsm.storage.base import StorageKey
 from app.storage import Storage
 
 
@@ -16,15 +19,15 @@ def test_registration_reverse_and_manual_broadcast(tmp_path, monkeypatch):
         storage.remember_user(123)
         storage.remember_user(456)
         bot = SimpleNamespace(send_message=AsyncMock(), send_photo=AsyncMock())
-        state = SimpleNamespace(clear=AsyncMock())
+        state = FSMContext(MemoryStorage(), StorageKey(bot_id=1, chat_id=99, user_id=99))
         dp = await build_dispatcher(storage, Settings("unused", 99, str(tmp_path / "users.db")))
         handlers = {h.callback.__name__: h.callback for h in dp.message.handlers}
         admin = SimpleNamespace(from_user=SimpleNamespace(id=99),
                                 chat=SimpleNamespace(id=99, type="private"),
-                                answer=AsyncMock(), bot=bot)
+                                answer=AsyncMock(), bot=bot, photo=None, media_group_id=None)
         user = SimpleNamespace(from_user=SimpleNamespace(id=123),
                                chat=SimpleNamespace(id=123, type="private"),
-                               answer=AsyncMock(), bot=bot)
+                               answer=AsyncMock(), bot=bot, photo=None, media_group_id=None)
         await handlers["redirect_slash"](admin, state)
         assert storage.get_mode() == "registration"
         assert set(storage.known_users()) == {123, 456}
@@ -45,9 +48,14 @@ def test_registration_reverse_and_manual_broadcast(tmp_path, monkeypatch):
         assert "Star" in user.answer.await_args.args[0]
         before = bot.send_message.await_count
         await handlers["send_command"](admin, state, CommandObject(command="send", args="Custom text"))
-        assert bot.send_message.await_count - before == 2
-        assert {c.args[0] for c in bot.send_message.await_args_list[-2:]} == {123, 456}
-        assert all(c.args[1] == "Custom text" for c in bot.send_message.await_args_list[-2:])
+        assert bot.send_message.await_count - before == 1  # admin preview only
+        data = await state.get_data()
+        confirm = next(h.callback for h in dp.callback_query.handlers if h.callback.__name__ == "confirm_broadcast")
+        callback = SimpleNamespace(from_user=admin.from_user, message=admin, bot=bot,
+                                   data=f"draft:send:{data['token']}", answer=AsyncMock())
+        await confirm(callback, state)
+        assert {c.kwargs["chat_id"] for c in bot.send_message.await_args_list[-2:]} == {123, 456}
+        assert all(c.kwargs["text"] == "Custom text" for c in bot.send_message.await_args_list[-2:])
         await handlers["redirect_slash"](user, state)
         assert storage.get_mode() == "normal", "Non-admin changed mode"
         assert set(storage.known_users()) == {123, 456}

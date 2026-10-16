@@ -13,7 +13,7 @@ Python 3.12 and aiogram 3.x, deployed as a Render Background Worker with Telegra
 
 The admin panel's REDIRECT and REVERSE buttons use the same mode behavior.
 Ordinary messages do not broadcast unless the admin has deliberately opened the Broadcast Message composer.
-In registration mode, tap **Send Broadcast** to start the configured three-image rotation for saved users. The first image is queued immediately; later images follow 2 hours after each successful delivery. Order: 257,000 TL, 320,000 TL, 239,000 TL, then repeat. New users who start during an active rotation are included. REVERSE stops it. **Custom Message** opens the text composer; `/send MESSAGE` remains available.
+In registration mode, tap **Send Broadcast** to start the configured three-image rotation for saved users. The first image is queued immediately; later images follow 2 hours after each successful delivery. Order: 257,000 TL, 320,000 TL, 239,000 TL, then repeat. New users who start during an active rotation are included. REVERSE stops it. **Custom Message** opens the photo/text composer; `/send MESSAGE` previews a text draft and `/send` opens an empty composer.
 
 ## Saved users and data
 
@@ -62,3 +62,16 @@ The PostgreSQL migration test requires TEST_DATABASE_URL pointing to a disposabl
 Captions are Turkish and describe the supplied images. No recurring two-hour expiry claim is used.
 Progress and next delivery times persist in the configured database. Blocked recipients are disabled for the current rotation.
 Repeated Send Broadcast restarts the rotation at image one. Large audiences and Telegram rate limits can delay deliveries.
+
+## Custom photo and text broadcasts
+
+In your private admin chat, open `/admin` → **Custom Message**, or use `/send`.
+Send one photo with a caption, or send photo and text separately in either order.
+Text sent during composition replaces the draft caption; a photo without a caption keeps the draft text.
+Review the preview and press **Confirm Send** to broadcast to saved users. Nothing is sent before confirmation.
+Use **Cancel** or `/admin` to discard the draft. Only the latest preview can be confirmed, once.
+`/send MESSAGE` also requires confirmation; `/send MESSAGE` in a photo caption is supported.
+Photo-only and text-only drafts work. Albums and other file types are not supported.
+Captions over 1,024 Telegram character units are delivered as a separate text message after the photo;
+text is limited to 4,096 units. Text is delivered as plain text. Images use Telegram file IDs rather than Render disk space.
+Drafts are temporary and are discarded on restart; saved users and the two-hour rotation are unaffected.

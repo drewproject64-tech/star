@@ -4,6 +4,7 @@ import asyncio
 import html
 import logging
 import sqlite3
+import secrets
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -13,6 +14,7 @@ from aiogram.filters import Command, CommandStart
 from aiogram.filters.command import CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.storage.memory import SimpleEventIsolation
 from aiogram.types import BotCommand, CallbackQuery, ErrorEvent, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from aiogram.types import FSInputFile
 
@@ -133,30 +135,50 @@ async def send_registration(bot: Bot, chat_id: int) -> None:
         await bot.send_message(chat_id, text, reply_markup=registration_keyboard())
 
 
-async def broadcast_text(bot: Bot, chat_ids: list[int], text: str) -> tuple[int, int]:
-    """Deliver only the explicit /send payload, without forwarding its command."""
+def broadcast_keyboard(token: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✅ Confirm Send", callback_data=f"draft:send:{token}"),
+        InlineKeyboardButton(text="❌ Cancel", callback_data=f"draft:cancel:{token}"),
+    ]])
+
+
+async def send_broadcast_content(bot: Bot, chat_id: int, text: str, photo: str | None = None) -> None:
+    """Retry each part independently so a text rate limit doesn't resend the photo."""
+    async def retry(method, **kwargs):
+        while True:
+            try:
+                await method(chat_id=chat_id, parse_mode=None, **kwargs)
+                return
+            except TelegramRetryAfter as exc:
+                await asyncio.sleep(exc.retry_after)
+
+    # Telegram measures limits in UTF-16 code units, including emoji.
+    short_caption = len(text.encode("utf-16-le")) // 2 <= 1024
+    if photo:
+        await retry(bot.send_photo, photo=photo, caption=text if short_caption else None)
+    if text and (not photo or not short_caption):
+        await retry(bot.send_message, text=text)
+
+
+async def broadcast_text(bot: Bot, chat_ids: list[int], text: str, photo: str | None = None) -> tuple[int, int]:
+    """Deliver the confirmed draft using Telegram file IDs, without local image storage."""
     sent = failed = 0
     for chat_id in chat_ids:
         if chat_id <= 0:
             continue
-        while True:
-            try:
-                await bot.send_message(chat_id, text, parse_mode=None)
-            except TelegramRetryAfter as exc:
-                await asyncio.sleep(exc.retry_after)
-                continue
-            except TelegramAPIError:
-                failed += 1
-                logger.warning("Broadcast delivery failed for chat %s", chat_id, exc_info=True)
-            else:
-                sent += 1
-            break
+        try:
+            await send_broadcast_content(bot, chat_id, text, photo)
+        except TelegramAPIError:
+            failed += 1
+            logger.warning("Broadcast delivery failed for chat %s", chat_id, exc_info=True)
+        else:
+            sent += 1
         await asyncio.sleep(0.05)
     return sent, failed
 
 
 async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
-    dp = Dispatcher()
+    dp = Dispatcher(events_isolation=SimpleEventIsolation())
     broadcast_lock = asyncio.Lock()
 
     def is_admin(message: Message) -> bool:
@@ -164,6 +186,21 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
 
     def is_admin_callback(callback: CallbackQuery) -> bool:
         return bool(settings.admin_id and callback.from_user and callback.from_user.id == settings.admin_id)
+
+
+    async def preview_draft(message: Message, state: FSMContext, text: str, photo: str | None) -> None:
+        if len(text.encode("utf-16-le")) // 2 > 4096:
+            await message.answer("Please keep broadcast text to 4,096 characters or fewer (emoji may count as two).")
+            return
+        token = secrets.token_hex(8)
+        await state.set_state(BroadcastState.waiting_for_text)
+        await state.update_data(text=text, photo=photo, token=token)
+        await send_broadcast_content(message.bot, message.chat.id, text, photo)
+        await message.answer(
+            "Preview only — nothing sent to users yet. Send a photo or replacement caption/text to update this draft, "
+            "then tap Confirm Send. /admin cancels. Long captions are sent as a separate message after the photo.",
+            reply_markup=broadcast_keyboard(token),
+        )
 
 
     async def begin_promotion_for_user(bot: Bot, chat_id: int) -> None:
@@ -212,19 +249,21 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
         if message.chat.type != "private":
             await message.answer("Use /send in your private chat with the bot.")
             return
-        text = (command.args or "").strip()
-        if not text:
-            await message.answer("Usage: /send hey hi, are you there?\nOnly the text after /send is broadcast.")
-            return
         if broadcast_lock.locked():
             await message.answer("A broadcast is already running. Wait for its delivery report before sending another.")
             return
+        text = (command.args or "").strip()
+        photo = message.photo[-1].file_id if message.photo else None
+        if message.media_group_id:
+            await message.answer("Send one photo at a time, not an album. Nothing has been broadcast.")
+            return
         await state.clear()
-        async with broadcast_lock:
-            recipients = [chat_id for chat_id in storage.known_users() if chat_id > 0]
-            await message.answer(f"Broadcast started for {len(recipients)} saved users.")
-            sent, failed = await broadcast_text(message.bot, recipients, text)
-            await message.answer(f"Broadcast complete. Delivered: {sent}. Failed: {failed}.")
+        if not text and not photo:
+            await state.set_state(BroadcastState.waiting_for_text)
+            await message.answer("Send a photo with a caption, a photo and text separately (either order), or text only. "
+                                 "You will see a preview before confirming. /admin cancels.")
+            return
+        await preview_draft(message, state, text, photo)
 
     @dp.message(Command("admin"))
     async def admin_command(message: Message, state: FSMContext) -> None:
@@ -265,8 +304,8 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
             await state.set_state(BroadcastState.waiting_for_text)
             await callback.answer()
             await callback.message.answer(
-                "Type the text you want to broadcast. Your next text message will be sent to saved users.\n"
-                "Use /admin to cancel. /redirect and /reverse remain mode commands."
+                "Send a photo with a caption, a photo and text separately (either order), or text only.\n"
+                "Review the preview and tap Confirm Send. /admin cancels. /redirect and /reverse remain mode commands."
             )
             return
         await state.clear()
@@ -287,6 +326,34 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
         if callback.message:
             if callback.message.text != status:
                 await callback.message.edit_text(status, reply_markup=admin_keyboard(), parse_mode="HTML")
+
+    @dp.callback_query(F.data.startswith("draft:"))
+    async def confirm_broadcast(callback: CallbackQuery, state: FSMContext) -> None:
+        if not is_admin_callback(callback) or not callback.message or callback.message.chat.type != "private":
+            await callback.answer("Admin access denied.", show_alert=True)
+            return
+        if broadcast_lock.locked():
+            await callback.answer("A broadcast is already running.", show_alert=True)
+            return
+        async with broadcast_lock:
+            data = await state.get_data()
+            parts = (callback.data or "").split(":")
+            if (len(parts) != 3 or parts[1] not in {"send", "cancel"}
+                    or await state.get_state() != BroadcastState.waiting_for_text.state
+                    or parts[2] != data.get("token")):
+                await callback.answer("This preview expired. Use the newest preview or open /admin.", show_alert=True)
+                return
+            # Consume before delivery: old buttons and duplicate clicks cannot send again.
+            await state.clear()
+            if parts[1] == "cancel":
+                await callback.answer("Cancelled")
+                await callback.message.answer("Broadcast cancelled. Nothing sent to users.")
+                return
+            await callback.answer("Broadcast started")
+            recipients = [chat_id for chat_id in storage.known_users() if chat_id > 0]
+            await callback.message.answer(f"Broadcast started for {len(recipients)} saved users.")
+            sent, failed = await broadcast_text(callback.bot, recipients, data.get("text", ""), data.get("photo"))
+            await callback.message.answer(f"Broadcast complete. Delivered: {sent}. Failed: {failed}.")
 
     @dp.message(Command("help"))
     async def help_command(message: Message, state: FSMContext) -> None:
@@ -387,15 +454,31 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
         if not is_admin(message):
             await state.clear()
             return
-        text = (message.text or "").strip()
-        if not text:
-            await message.answer("Please send text, or /admin to cancel.")
+        if message.chat.type != "private":
+            await state.clear()
             return
+        if broadcast_lock.locked():
+            await message.answer("A broadcast is already running. Wait for its delivery report.")
+            return
+        if message.media_group_id:
+            await message.answer("Send one photo at a time, not an album. Nothing has been broadcast.")
+            return
+        text = (message.text or message.caption or "").strip()
         if text.startswith("/") or text.lower() in {"redirect", "reverse"}:
             await state.clear()
             await message.answer("Command not broadcast. Open /admin to compose again.")
             return
-        await send_command(message, state, CommandObject(command="send", args=text))
+        data = await state.get_data()
+        if message.photo:
+            # A separately sent photo keeps the draft text unless it has its own caption.
+            photo = message.photo[-1].file_id
+            text = text or data.get("text", "")
+        elif message.text and text:
+            photo = data.get("photo")
+        else:
+            await message.answer("Please send a photo or text, or /admin to cancel.")
+            return
+        await preview_draft(message, state, text, photo)
 
     @dp.message(SubmitState.waiting_for_text)
     async def receive_submission(message: Message, state: FSMContext) -> None:
@@ -476,7 +559,7 @@ async def main() -> None:
             BotCommand(command="start", description="Open the main menu"),
             BotCommand(command="help", description="Learn how to use the bot"),
             BotCommand(command="admin", description="Open administrator controls"),
-            BotCommand(command="send", description="Admin: broadcast message text"),
+            BotCommand(command="send", description="Admin: compose photo or text broadcast"),
             BotCommand(command="redirect", description="Admin: enable registration mode"),
             BotCommand(command="reverse", description="Admin: restore normal mode"),
         ])
