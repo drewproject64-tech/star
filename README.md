@@ -13,7 +13,7 @@ Python 3.12 and aiogram 3.x, deployed as a Render Background Worker with Telegra
 
 The admin panel's REDIRECT and REVERSE buttons use the same mode behavior.
 Ordinary messages do not broadcast unless the admin has deliberately opened the Broadcast Message composer.
-In registration mode, tap **Send Broadcast** to start the configured four-message rotation for saved users. The first image is queued immediately; later images follow 2 hours after each successful delivery. Order: 257,000 TL, 320,000 TL, 239,000 TL, account-access notice, then repeat. New users who start during an active rotation are included. REVERSE stops it. **Custom Message** opens the photo/text composer; `/send MESSAGE` previews a text draft and `/send` opens an empty composer.
+In registration mode, tap **Send Broadcast** to start the configured four-message rotation for saved users. All three photos and the account-access notice are queued immediately; after the full set is delivered, the set repeats two hours later. Order: 257,000 TL, 320,000 TL, 239,000 TL, account-access notice, then repeat. New users who start during an active rotation are included. REVERSE stops it. **Custom Message** opens the photo/text composer; `/send MESSAGE` previews a text draft and `/send` opens an empty composer.
 
 ## Saved users and data
 
@@ -78,13 +78,20 @@ Drafts are temporary and are discarded on restart; saved users and the two-hour 
 
 ## Account access announcement (16 October 2026)
 
-The next deployment queues the Turkish account-access announcement once for all saved private chats,
-including the 23 additional IDs recovered from successful/failed delivery logs in the last seven days
-(95 recovered IDs total). Logs are not a complete registry; preserve the live database before deploying.
-The announcement is also the fourth message of the two-hour rotation: three withdrawal images then the text notice, repeating. Its delivery ledger persists
-in `account_deliveries`: completed and blocked users are not requeued on restart; temporary failures retry.
-As with Telegram sends generally, an interruption after Telegram accepts a message but before the ledger
-commit can cause a duplicate on retry. Losing an ephemeral database also loses the delivery ledger.
-New users in REDIRECT mode receive the same message in the /start registration caption. Normal-mode
-/start behavior is unchanged. The account button and all registration/rotation links use https://strz.ac/CoxW.
-Already-delivered Telegram messages are not edited. The live database migration to Neon remains pending.
+The **Send Broadcast — Photos + Notice** admin button queues the entire set immediately
+for every saved private chat. The set is: three original withdrawal photos with captions,
+then the Turkish account-access notice with the new link. After the whole set is delivered,
+that user's next set starts two hours later. Delivery is rate limited; it begins immediately
+and takes time to reach all users. Partial progress is saved per user for retries/restarts.
+REDIRECT alone and deployment do not activate a new campaign. Existing active jobs resume
+from the saved database. REVERSE stops the campaign. `/send` and Custom Message remain
+separate special broadcasts, with preview and confirmation.
+
+New /start requests save the user. In REDIRECT mode, /start includes the new notice and
+queues the complete set if the broadcast is active. Normal mode keeps the standard menu.
+All new redirect /start and rotation buttons use https://strz.ac/CoxW. Already-delivered
+Telegram messages are not edited.
+
+Recovered 23 additional IDs from star delivery logs in the last seven days: 95 total.
+Logs cannot recover users whose IDs were never logged, settings, submissions or start dates.
+Preserve the live database before deployment. Neon migration is still pending.

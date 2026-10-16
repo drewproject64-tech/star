@@ -2,7 +2,6 @@ from dataclasses import dataclass
 
 REGISTRATION_URL = "https://strz.ac/CoxW"
 REGISTRATION_HEADING = "✨✨ 𝑩𝑼𝑹𝑨𝑫𝑨𝑵 𝑲𝑨𝒀𝑰𝑻 𝑶𝑳 ✨✨"
-ACCOUNT_CAMPAIGN_ID = "account-access-2026-10-16"
 ACCOUNT_ACCESS_MESSAGE = (
     "🔗 Eski bağlantımız artık aktif değil, ancak merak etmeyin! Hesabınıza erişmek, "
     "kaldığınız yerden devam etmek ve size özel teklifleri keşfetmek için yeni bağlantımızı kullanın:\n\n"
@@ -38,7 +37,7 @@ UPDATES = (
     Item("Submission Status", "Each accepted submission is saved and assigned a reference number."),
 )
 
-# Withdrawal images and the account notice, one message every two hours.
+# Send the full withdrawal-photo and account-notice set, then repeat after two hours.
 ROTATION_INTERVAL_SECONDS = 2 * 60 * 60
 ROTATION_MESSAGES = (
     ("assets/withdrawal_257000.jpg", "💬 Paylaşılan çekim görseli: 257.000 TL"),
