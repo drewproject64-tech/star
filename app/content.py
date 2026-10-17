@@ -40,8 +40,8 @@ UPDATES = (
 # Send the full withdrawal-photo and account-notice set, then repeat after two hours.
 ROTATION_INTERVAL_SECONDS = 2 * 60 * 60
 ROTATION_MESSAGES = (
-    ("assets/withdrawal_257000.jpg", "💬 Paylaşılan çekim görseli: 257.000 TL"),
-    ("assets/withdrawal_320000.jpg", "💬 Paylaşılan çekim görseli: 320.000 TL"),
-    ("assets/withdrawal_239000.jpg", "💬 Paylaşılan çekim görseli: 239.000 TL"),
+    ("assets/withdrawal_257000.jpg", "💬 Paylaşılan çekim görseli: 257.000 TL\n\n" + ACCOUNT_ACCESS_MESSAGE),
+    ("assets/withdrawal_320000.jpg", "💬 Paylaşılan çekim görseli: 320.000 TL\n\n" + ACCOUNT_ACCESS_MESSAGE),
+    ("assets/withdrawal_239000.jpg", "💬 Paylaşılan çekim görseli: 239.000 TL\n\n" + ACCOUNT_ACCESS_MESSAGE),
     (None, ACCOUNT_ACCESS_MESSAGE),
 )
