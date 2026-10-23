@@ -48,7 +48,7 @@ class SubmitState(StatesGroup):
 
 def registration_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[
-        InlineKeyboardButton(text="🔗 Hesabıma eriş", url=REGISTRATION_URL)
+        InlineKeyboardButton(text=REGISTRATION_HEADING, url=REGISTRATION_URL)
     ]])
 
 
@@ -58,7 +58,7 @@ def admin_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="⏸ REVERSE — Disable", callback_data="admin:reverse")],
         [InlineKeyboardButton(text="ℹ️ Check Status", callback_data="admin:status")],
         [InlineKeyboardButton(text="👥 Users & Stats", callback_data="admin:users")],
-        [InlineKeyboardButton(text="📣 Send Broadcast — Photos + Notice", callback_data="admin:broadcast")],
+        [InlineKeyboardButton(text="📣 Start Game Post Rotation", callback_data="admin:broadcast")],
         [InlineKeyboardButton(text="✍️ Custom Message", callback_data="admin:custombroadcast")],
     ])
 
@@ -294,8 +294,8 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
             await callback.answer("Broadcast started")
             if callback.message:
                 await callback.message.answer(
-                    f"Rotation started for {count} saved users. 257,000 TL → 320,000 TL → 239,000 TL → account access notice, "
-                    "Delivery starts now. One message is sent every 10 minutes, cycling through the three photos and notice. "
+                    f"Game post rotation started for {count} saved users. Hold&Spin → Eternal Diamonds. "
+                    "Delivery starts now. One game post is sent every 10 minutes, then the rotation repeats. "
                     "REVERSE stops it. Special messages use /send or Custom Message.",
                     reply_markup=admin_keyboard(),
                 )
