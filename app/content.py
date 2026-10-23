@@ -37,8 +37,8 @@ UPDATES = (
     Item("Submission Status", "Each accepted submission is saved and assigned a reference number."),
 )
 
-# Send the full withdrawal-photo and account-notice set, then repeat after two hours.
-ROTATION_INTERVAL_SECONDS = 2 * 60 * 60
+# Send one rotation message every ten minutes, looping through the full set.
+ROTATION_INTERVAL_SECONDS = 10 * 60
 ROTATION_MESSAGES = (
     ("assets/withdrawal_257000.jpg", "💬 Paylaşılan çekim görseli: 257.000 TL\n\n" + ACCOUNT_ACCESS_MESSAGE),
     ("assets/withdrawal_320000.jpg", "💬 Paylaşılan çekim görseli: 320.000 TL\n\n" + ACCOUNT_ACCESS_MESSAGE),
