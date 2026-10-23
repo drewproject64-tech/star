@@ -259,7 +259,7 @@ class Storage:
             connection.execute(
                 "UPDATE rotation_jobs SET step=?, next_at=? "
                 "WHERE chat_id=? AND step=? AND generation=? AND enabled=1",
-                ((step + 1) % len(ROTATION_MESSAGES), now + (ROTATION_INTERVAL_SECONDS if (step + 1) % len(ROTATION_MESSAGES) == 0 else 0),
+                ((step + 1) % len(ROTATION_MESSAGES), now + ROTATION_INTERVAL_SECONDS,
                  chat_id, step, generation),
             )
             connection.commit()
