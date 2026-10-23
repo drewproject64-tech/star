@@ -215,7 +215,7 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
         storage.enable_registration()
         await message.answer(
             "Registration mode enabled. Open /admin and tap Send Broadcast to start the "
-            "four-message broadcast set immediately, then repeat the set every two hours. REDIRECT alone does not send broadcasts.",
+            "first broadcast immediately, then send the next message every 10 minutes in a repeating rotation. REDIRECT alone does not send broadcasts.",
             reply_markup=admin_keyboard(),
         )
 
@@ -295,7 +295,7 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
             if callback.message:
                 await callback.message.answer(
                     f"Rotation started for {count} saved users. 257,000 TL → 320,000 TL → 239,000 TL → account access notice, "
-                    "Delivery starts now. All three photos and the notice are sent as a set; the set repeats every 2 hours. "
+                    "Delivery starts now. One message is sent every 10 minutes, cycling through the three photos and notice. "
                     "REVERSE stops it. Special messages use /send or Custom Message.",
                     reply_markup=admin_keyboard(),
                 )
