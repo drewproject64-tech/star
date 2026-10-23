@@ -212,10 +212,10 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
             await message.answer("This command is only available to the configured administrator.")
             return
         await state.clear()
-        storage.enable_registration()
+        count = storage.activate_for_known_users()
         await message.answer(
-            "Registration mode enabled. Open /admin and tap Send Broadcast to start the "
-            "first broadcast immediately, then send the next message every 10 minutes in a repeating rotation. REDIRECT alone does not send broadcasts.",
+            f"Rotation started for {count} saved users. The first message is queued now; "
+            "the next message follows every 10 minutes. /reverse stops the rotation.",
             reply_markup=admin_keyboard(),
         )
 
@@ -314,8 +314,8 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
             return
         await state.clear()
         if action == "redirect":
-            storage.enable_registration()
-            status = "✅ <b>Registration mode enabled</b>\nTap Send Broadcast to start the four-message rotation. Nothing is broadcast until you tap it."
+            count = storage.activate_for_known_users()
+            status = f"✅ <b>Rotation started</b>\nFirst message queued for {count} saved users. One message every 10 minutes. /reverse stops it."
         elif action == "reverse":
             storage.stop_rotation()
             status = "⏸ <b>REVERSE enabled</b>\nNormal Star menu restored. Scheduled messages are paused."
