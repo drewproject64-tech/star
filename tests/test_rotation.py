@@ -16,19 +16,17 @@ def test_rotation(tmp_path, monkeypatch):
     assert not s.due_rotation(now=100)
     s.activate_for_known_users(now=100)
     for step in range(4):
-        now = 100
+        now = 100 + step * 600
         row = s.due_rotation(now=now)[0]
         assert row["step"] == step
         s.finish_rotation_job(123, step, row["generation"], now=now)
-        if step < 3:
-            assert s.due_rotation(now=now)[0]["step"] == step + 1
-        else:
-            assert not s.due_rotation(now=now+7199)
-    assert Storage(str(tmp_path / "users.db")).due_rotation(now=7300)[0]["step"] == 0
+        assert not s.due_rotation(now=now+599)
+        assert s.due_rotation(now=now+600)[0]["step"] == (step + 1) % 4
+    assert Storage(str(tmp_path / "users.db")).due_rotation(now=2500)[0]["step"] == 0
     s.stop_rotation()
     assert not s.due_rotation(now=99999)
     assert s.known_users() == [123]
-    assert ROTATION_INTERVAL_SECONDS == 7200
+    assert ROTATION_INTERVAL_SECONDS == 600
     assert [path for path, _ in ROTATION_MESSAGES] == [
         "assets/withdrawal_257000.jpg", "assets/withdrawal_320000.jpg", "assets/withdrawal_239000.jpg", None
     ]
