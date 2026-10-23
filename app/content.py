@@ -37,11 +37,9 @@ UPDATES = (
     Item("Submission Status", "Each accepted submission is saved and assigned a reference number."),
 )
 
-# Send one rotation message every ten minutes, looping through the full set.
+# Send one game post every ten minutes, looping through the set.
 ROTATION_INTERVAL_SECONDS = 10 * 60
 ROTATION_MESSAGES = (
-    ("assets/withdrawal_257000.jpg", "💬 Paylaşılan çekim görseli: 257.000 TL\n\n" + ACCOUNT_ACCESS_MESSAGE),
-    ("assets/withdrawal_320000.jpg", "💬 Paylaşılan çekim görseli: 320.000 TL\n\n" + ACCOUNT_ACCESS_MESSAGE),
-    ("assets/withdrawal_239000.jpg", "💬 Paylaşılan çekim görseli: 239.000 TL\n\n" + ACCOUNT_ACCESS_MESSAGE),
-    (None, ACCOUNT_ACCESS_MESSAGE),
+    ("assets/hold_spin.jpg", "Floating Dragon Hold&Spin Mobile: Paylaşılan görselde 1 $ bahis ve 5.000 $ kazanç gösteriliyor."),
+    ("assets/eternal_diamonds.jpg", "Eternal Diamonds: Paylaşılan görselde 2 $ bahis ve 5.506 $ kazanç gösteriliyor."),
 )
