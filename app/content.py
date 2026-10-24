@@ -42,4 +42,5 @@ ROTATION_INTERVAL_SECONDS = 10 * 60
 ROTATION_MESSAGES = (
     ("assets/hold_spin.jpg", "Floating Dragon Hold&Spin Mobile: Paylaşılan görselde 1 $ bahis ve 5.000 $ kazanç gösteriliyor."),
     ("assets/eternal_diamonds.jpg", "Eternal Diamonds: Paylaşılan görselde 2 $ bahis ve 5.506 $ kazanç gösteriliyor."),
+    ("assets/cashback_40.jpg", "Paylaşılan kampanya görseli: %40’a varan para iadesi. Kampanya koşulları geçerlidir."),
 )
