@@ -28,7 +28,7 @@ def test_rotation(tmp_path, monkeypatch):
     assert s.known_users() == [123]
     assert ROTATION_INTERVAL_SECONDS == 600
     assert [path for path, _ in ROTATION_MESSAGES] == [
-        "assets/hold_spin.jpg", "assets/eternal_diamonds.jpg"
+        "assets/hold_spin.jpg", "assets/eternal_diamonds.jpg", "assets/cashback_40.jpg"
     ]
 
 def test_button(tmp_path, monkeypatch):
@@ -42,7 +42,7 @@ def test_button(tmp_path, monkeypatch):
         message = SimpleNamespace(chat=SimpleNamespace(type="private"), answer=AsyncMock(), text=None, edit_text=AsyncMock())
         cb = SimpleNamespace(from_user=SimpleNamespace(id=99), data="admin:redirect", message=message, answer=AsyncMock())
         await handler(cb, state)
-        assert not s.rotation_running()
+        assert s.rotation_running()
         cb.data = "admin:broadcast"
         await handler(cb, state)
         assert s.rotation_running()
