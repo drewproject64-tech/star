@@ -294,7 +294,7 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
             await callback.answer("Broadcast started")
             if callback.message:
                 await callback.message.answer(
-                    f"Game post rotation started for {count} saved users. Hold&Spin → Eternal Diamonds. "
+                    f"Game post rotation started for {count} saved users. Hold&Spin → Eternal Diamonds → Cashback. "
                     "Delivery starts now. One game post is sent every 10 minutes, then the rotation repeats. "
                     "REVERSE stops it. Special messages use /send or Custom Message.",
                     reply_markup=admin_keyboard(),
