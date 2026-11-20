@@ -42,7 +42,7 @@ def test_button(tmp_path, monkeypatch):
         message = SimpleNamespace(chat=SimpleNamespace(type="private"), answer=AsyncMock(), text=None, edit_text=AsyncMock())
         cb = SimpleNamespace(from_user=SimpleNamespace(id=99), data="admin:redirect", message=message, answer=AsyncMock())
         await handler(cb, state)
-        assert s.rotation_running()
+        assert s.get_mode() == "registration" and not s.rotation_running()
         cb.data = "admin:broadcast"
         await handler(cb, state)
         assert s.rotation_running()

@@ -20,17 +20,15 @@ from aiogram.types import FSInputFile
 
 from app.config import Settings
 from app.content import (
-    ACCOUNT_ACCESS_MESSAGE,
     PROMOTIONS,
     ROTATION_MESSAGES,
-    REGISTRATION_CAPTION,
     REGISTRATION_HEADING,
     REGISTRATION_URL,
-    START_CAPTION,
     UPDATES,
     Item,
 )
 from app.keyboards import detail_menu, item_menu, main_menu, result_menu, submit_menu
+from app.redirect import handle_redirect, prompt_for_language
 from app.storage import Storage
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
@@ -127,15 +125,6 @@ def safe_index(data: str | None, prefix: str, count: int) -> int | None:
     return index if 0 <= index < count else None
 
 
-async def send_registration(bot: Bot, chat_id: int) -> None:
-    text = f"{START_CAPTION}\n\n{REGISTRATION_CAPTION}"
-    image = ROOT / "assets" / "start.jpg"
-    if image.is_file():
-        await bot.send_photo(chat_id, FSInputFile(image), caption=text, reply_markup=registration_keyboard())
-    else:
-        await bot.send_message(chat_id, text, reply_markup=registration_keyboard())
-
-
 def broadcast_keyboard(token: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(text="✅ Confirm Send", callback_data=f"draft:send:{token}"),
@@ -204,18 +193,14 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
         )
 
 
-    async def begin_promotion_for_user(bot: Bot, chat_id: int) -> None:
-        await send_registration(bot, chat_id)
-
-    async def activate_promotion(message: Message, state: FSMContext) -> None:
+    async def enable_redirect(message: Message, state: FSMContext) -> None:
         if not is_admin(message):
             await message.answer("This command is only available to the configured administrator.")
             return
         await state.clear()
-        count = storage.activate_for_known_users()
+        storage.enable_registration()
         await message.answer(
-            f"Rotation started for {count} saved users. The first message is queued now; "
-            "the next message follows every 10 minutes. /reverse stops the rotation.",
+            "REDIRECT enabled. Users who send /start can choose English or Turkish.",
             reply_markup=admin_keyboard(),
         )
 
@@ -234,15 +219,20 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
         if message.chat and message.chat.type == "private":
             logger.info("Start recorded for chat %s; new=%s", message.chat.id, is_new_user)
         if storage.get_mode() == "registration":
-            # /start is an explicit user action: show the opening message to anyone who requests it.
-            try:
-                await begin_promotion_for_user(message.bot, message.chat.id)
-                storage.queue_rotation_for_user(message.chat.id)
-            except (TelegramAPIError, OSError, FileNotFoundError):
-                logger.exception("Failed to send registration message")
-                await message.answer("The registration message could not be sent right now. Please try again later.")
+            if message.chat.type != "private":
+                await message.answer("Open a private chat with the bot and send /start.")
+                return
+            await prompt_for_language(message, state)
+            storage.queue_rotation_for_user(message.chat.id)
             return
         await message.answer(home_text(), reply_markup=main_menu(), parse_mode="HTML")
+
+    @dp.callback_query(F.data.startswith("redirect:"))
+    async def redirect_step(callback: CallbackQuery, state: FSMContext) -> None:
+        if storage.get_mode() != "registration":
+            await callback.answer("Use /start to open the Star menu.", show_alert=True)
+            return
+        await handle_redirect(callback, state)
 
     @dp.message(Command("send"))
     async def send_command(message: Message, state: FSMContext, command: CommandObject) -> None:
@@ -314,8 +304,8 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
             return
         await state.clear()
         if action == "redirect":
-            count = storage.activate_for_known_users()
-            status = f"✅ <b>Rotation started</b>\nFirst message queued for {count} saved users. One message every 10 minutes. /reverse stops it."
+            storage.enable_registration()
+            status = "✅ <b>REDIRECT enabled</b>\nUsers who send /start can choose English or Turkish."
         elif action == "reverse":
             storage.stop_rotation()
             status = "⏸ <b>REVERSE enabled</b>\nNormal Star menu restored. Scheduled messages are paused."
@@ -363,17 +353,17 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
     async def help_command(message: Message, state: FSMContext) -> None:
         await state.clear()
         if storage.get_mode() == "registration":
-            await message.answer("Registration mode is active. Use /start to see the registration button.")
+            await message.answer("Registration mode is active. Use /start to choose your language.")
             return
         await message.answer(help_text(), reply_markup=main_menu(), parse_mode="HTML")
 
     @dp.message(Command("redirect"))
     async def redirect_slash(message: Message, state: FSMContext) -> None:
-        await activate_promotion(message, state)
+        await enable_redirect(message, state)
 
     @dp.message(F.text.regexp(r"(?i)^redirect$"))
     async def redirect_plain(message: Message, state: FSMContext) -> None:
-        await activate_promotion(message, state)
+        await enable_redirect(message, state)
 
     @dp.message(Command("reverse"))
     async def reverse_slash(message: Message, state: FSMContext) -> None:
@@ -538,7 +528,7 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
     @dp.message()
     async def fallback(message: Message, state: FSMContext) -> None:
         if storage.get_mode() == "registration":
-            await message.answer("Registration mode is active. Use /start to see the registration button.")
+            await message.answer("Registration mode is active. Use /start to choose your language.")
             return
         if await state.get_state() == SubmitState.waiting_for_text:
             await message.answer("Please send submission text, or tap Main Menu to cancel.", reply_markup=submit_menu())

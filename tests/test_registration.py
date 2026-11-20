@@ -35,11 +35,11 @@ def test_registration_reverse_and_manual_broadcast(tmp_path, monkeypatch):
         bot.send_message.assert_not_awaited()
         bot.send_photo.assert_not_awaited()
 
+        user.answer.return_value = SimpleNamespace(message_id=100)
         await handlers["start"](user, state)
-        calls = bot.send_message.await_args_list + bot.send_photo.await_args_list
-        assert len(calls) == 1
-        button = calls[0].kwargs["reply_markup"].inline_keyboard[0][0]
-        assert button.url
+        buttons = user.answer.await_args.kwargs["reply_markup"].inline_keyboard[0]
+        assert [button.text for button in buttons] == ["English", "Türkçe"]
+        assert not storage.rotation_running()
         assert not storage.due_sequences(now=10**12)
 
         await handlers["reverse_slash"](admin, state)

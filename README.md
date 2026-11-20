@@ -4,16 +4,23 @@ Python 3.12 and aiogram 3.x, deployed as a Render Background Worker with Telegra
 
 ## Modes and commands
 
-- `/start`: saves the user and opens the standard menu in normal mode. In registration mode, shows the original start image, registration text, and registration button.
+- `/start`: saves the user and opens the standard menu in normal mode. In REDIRECT mode, asks users to choose English or Turkish in their private chat.
 - `/help`: shows instructions.
 - `/admin`: administrator controls, Users & Stats, and Broadcast Message.
 - `/send MESSAGE`: admin-only manual text broadcast to saved private-chat users.
-- `/redirect` or `REDIRECT`: enables registration mode and waits for the administrator to tap Send Broadcast.
+- `/redirect` or `REDIRECT`: enables the bilingual flow for new `/start` requests.
 - `/reverse` or `REVERSE`: restores the normal menu.
 
 The admin panel's REDIRECT and REVERSE buttons use the same mode behavior.
 Ordinary messages do not broadcast unless the admin has deliberately opened the Broadcast Message composer.
-In registration mode, tap **Send Broadcast** to start the configured four-message rotation for saved users. All three photos and the account-access notice are queued immediately; after the full set is delivered, the set repeats two hours later. Order: 257,000 TL, 320,000 TL, 239,000 TL, account-access notice, then repeat. New users who start during an active rotation are included. REVERSE stops it. **Custom Message** opens the photo/text composer; `/send MESSAGE` previews a text draft and `/send` opens an empty composer.
+The REDIRECT flow asks the user to register, offers the registration link again if needed,
+and shows the slot image before the final instructions. Upload the game image as
+`assets/redirect_slot.jpg`. If the image is unavailable, the user can retry the Yes button.
+After a worker restart, users can use `/start` to begin again.
+
+The **Start Game Post Rotation** admin button is still available in REDIRECT mode.
+It sends one post every ten minutes in this order: Hold & Spin, Eternal Diamonds, Cashback.
+**REVERSE** stops the rotation. **Custom Message** opens the photo/text composer.
 
 ## Saved users and data
 
@@ -55,13 +62,13 @@ The PostgreSQL migration test requires TEST_DATABASE_URL pointing to a disposabl
 
 ## Rotation assets
 
-- `assets/withdrawal_257000.jpg`
-- `assets/withdrawal_320000.jpg`
-- `assets/withdrawal_239000.jpg`
+- `assets/hold_spin.jpg`
+- `assets/eternal_diamonds.jpg`
+- `assets/cashback_40.jpg`
 
-Captions are Turkish and describe the supplied images. No recurring two-hour expiry claim is used.
-Progress and next delivery times persist in the configured database. Blocked recipients are disabled for the current rotation.
-Repeated Send Broadcast restarts the rotation at image one. Large audiences and Telegram rate limits can delay deliveries.
+Progress and next delivery times persist in the configured database. Blocked recipients
+are disabled for the current rotation. Starting the rotation again resets it to the first
+image. Large audiences and Telegram rate limits can delay deliveries.
 
 ## Custom photo and text broadcasts
 
@@ -74,9 +81,11 @@ Use **Cancel** or `/admin` to discard the draft. Only the latest preview can be 
 Photo-only and text-only drafts work. Albums and other file types are not supported.
 Captions over 1,024 Telegram character units are delivered as a separate text message after the photo;
 text is limited to 4,096 units. Text is delivered as plain text. Images use Telegram file IDs rather than Render disk space.
-Drafts are temporary and are discarded on restart; saved users and the two-hour rotation are unaffected.
+Drafts are temporary and are discarded on restart; saved users and the game-post rotation are unaffected.
 
-## Account access announcement (16 October 2026)
+## Historical account access announcement (16 October 2026)
+
+This section documents the October 16 flow for reference.
 
 The **Send Broadcast — Photos + Notice** admin button queues the entire set immediately
 for every saved private chat. The set is: three original withdrawal photos with captions,
