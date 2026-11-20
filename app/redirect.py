@@ -1,18 +1,19 @@
+import asyncio
 import logging
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
-from aiogram.exceptions import TelegramBadRequest
+from aiogram import Bot
+from aiogram.exceptions import TelegramAPIError, TelegramBadRequest, TelegramForbiddenError, TelegramRetryAfter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
+from app.content import REDIRECT_REMINDER_INTERVAL, REGISTRATION_URL
+from app.storage import Storage
+
 logger = logging.getLogger(__name__)
 SLOT_IMAGE = Path(__file__).resolve().parent.parent / "assets" / "redirect_slot.jpg"
-REGISTER_URL = (
-    "https://starzbet584.com/tr-tr/play-game/3ccbcd0d-6274-47d7-8749-a3cc1652f895"
-    "?mode=preview&tid=AAJrAHMwQ294VwR9UHd7Fnae7IsFTw"
-)
 
 
 @dataclass(frozen=True)
@@ -28,6 +29,7 @@ class RedirectCopy:
     found_button: str
     image_unavailable: str
     final_message: str
+    reminder: str
 
 
 COPY = {
@@ -42,6 +44,7 @@ COPY = {
         find_prompt="Once you find it, click the button below to proceed.",
         found_button="Found it",
         image_unavailable="The slot-machine image is currently unavailable. Please try again later.",
+        reminder="Register and play now to stand a chance of winning ₺50,000.",
         final_message=(
             "Deposit ₺100.\n\n"
             "Then bet twice with just ₺1 each time.\n\n"
@@ -60,6 +63,7 @@ COPY = {
         find_prompt="Bulduğunuzda devam etmek için aşağıdaki düğmeye tıklayın.",
         found_button="Buldum",
         image_unavailable="Slot makinesi görseli şu anda kullanılamıyor. Lütfen daha sonra tekrar deneyin.",
+        reminder="₺50.000 kazanma şansı için hemen kayıt olun ve oynayın.",
         final_message=(
             "₺100 yatırın.\n\n"
             "Ardından her seferinde sadece ₺1 ile iki kez bahis yapın.\n\n"
@@ -85,16 +89,17 @@ async def prompt_for_language(message: Message, state: FSMContext) -> None:
     await state.update_data(redirect_stage="language", redirect_prompt=prompt.message_id)
 
 
+def registration_link(copy: RedirectCopy) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text=copy.register_button, url=REGISTRATION_URL)
+    ]])
+
+
 async def registration_prompt(message: Message, copy: RedirectCopy) -> Message:
-    return await message.answer(
-        copy.register_prompt,
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text=copy.register_button, url=REGISTER_URL)
-        ]]),
-    )
+    return await message.answer(copy.register_prompt, reply_markup=registration_link(copy))
 
 
-async def handle_redirect(callback: CallbackQuery, state: FSMContext) -> None:
+async def handle_redirect(callback: CallbackQuery, state: FSMContext, storage: Storage) -> None:
     message = callback.message
     data = await state.get_data()
     action = callback.data.split(":", 1)[1]
@@ -122,7 +127,8 @@ async def handle_redirect(callback: CallbackQuery, state: FSMContext) -> None:
         )
         return
 
-    copy = COPY.get(data.get("redirect_language"))
+    language = data.get("redirect_language")
+    copy = COPY.get(language)
     if copy and stage == "registration" and action == "no":
         await callback.answer()
         reminder = await registration_prompt(message, copy)
@@ -143,6 +149,34 @@ async def handle_redirect(callback: CallbackQuery, state: FSMContext) -> None:
     elif copy and stage == "game" and action == "found":
         await callback.answer()
         await message.answer(copy.final_message)
+        storage.schedule_redirect_reminder(message.chat.id, language)
         await state.clear()
     else:
         await callback.answer("Use /start to begin again. / Yeniden başlamak için /start kullanın.", show_alert=True)
+
+
+async def redirect_reminder_runner(bot: Bot, storage: Storage) -> None:
+    while True:
+        try:
+            for row in storage.due_redirect_reminders():
+                chat_id = row["chat_id"]
+                lease_until = storage.claim_redirect_reminder(chat_id, row["next_at"])
+                if lease_until is None:
+                    continue
+                copy = COPY[row["language"]]
+                try:
+                    await bot.send_message(chat_id, copy.reminder, reply_markup=registration_link(copy))
+                except TelegramForbiddenError:
+                    storage.finish_redirect_reminder(chat_id, lease_until, None)
+                except TelegramRetryAfter as exc:
+                    storage.finish_redirect_reminder(chat_id, lease_until, exc.retry_after)
+                    await asyncio.sleep(exc.retry_after)
+                except TelegramAPIError:
+                    storage.finish_redirect_reminder(chat_id, lease_until, 60)
+                    logger.warning("REDIRECT reminder delivery failed", exc_info=True)
+                else:
+                    storage.finish_redirect_reminder(chat_id, lease_until, REDIRECT_REMINDER_INTERVAL)
+                await asyncio.sleep(0.1)
+        except Exception:
+            logger.exception("REDIRECT reminder scheduler error")
+        await asyncio.sleep(15)

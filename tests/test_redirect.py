@@ -9,10 +9,17 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import Message
 
 from app import redirect
+from app.storage import Storage
 
 
 @pytest.mark.parametrize("language", ["en", "tr"])
 def test_redirect_registration_and_game(tmp_path, monkeypatch, language):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    clock = SimpleNamespace(now=100.0)
+    monkeypatch.setattr("app.storage.time", SimpleNamespace(time=lambda: clock.now))
+    storage = Storage(str(tmp_path / "star.db"))
+    storage.enable_registration()
+
     async def exercise():
         slot_image = tmp_path / "redirect_slot.jpg"
         monkeypatch.setattr(redirect, "SLOT_IMAGE", slot_image)
@@ -41,7 +48,7 @@ def test_redirect_registration_and_game(tmp_path, monkeypatch, language):
                 bot=bot,
                 answer=AsyncMock(),
             )
-            await redirect.handle_redirect(callback, state)
+            await redirect.handle_redirect(callback, state, storage)
             return callback
 
         await redirect.prompt_for_language(command, state)
@@ -53,7 +60,7 @@ def test_redirect_registration_and_game(tmp_path, monkeypatch, language):
             copy.prize, copy.register_prompt, copy.registered_prompt,
         ]
         await click("no", 4)
-        assert posted[-1][1].inline_keyboard[0][0].url == redirect.REGISTER_URL
+        assert posted[-1][1].inline_keyboard[0][0].url == "https://strz.ac/CoxW"
 
         missing = await click("yes", 4)
         missing.answer.assert_awaited_once_with(copy.image_unavailable, show_alert=True)
@@ -70,5 +77,28 @@ def test_redirect_registration_and_game(tmp_path, monkeypatch, language):
         assert posted[-1][0] == copy.final_message
         await click("found", 8)
         assert len(posted) == 9
+
+        clock.now += 3 * 60 * 60 - 1
+        assert not storage.due_redirect_reminders()
+        clock.now += 1
+        reopened = Storage(str(tmp_path / "star.db"))
+        row, = reopened.due_redirect_reminders()
+        lease = reopened.claim_redirect_reminder(42, row["next_at"])
+        assert row["language"] == language and lease is not None
+        assert storage.claim_redirect_reminder(42, row["next_at"]) is None
+        reopened.finish_redirect_reminder(42, lease, 0)
+
+        bot.send_message = AsyncMock()
+        monkeypatch.setattr(redirect, "asyncio", SimpleNamespace(
+            sleep=AsyncMock(side_effect=asyncio.CancelledError())
+        ))
+        with pytest.raises(asyncio.CancelledError):
+            await redirect.redirect_reminder_runner(bot, reopened)
+        bot.send_message.assert_awaited_once_with(42, copy.reminder, reply_markup=redirect.registration_link(copy))
+        assert not storage.due_redirect_reminders()
+        clock.now += 3 * 60 * 60
+        assert len(storage.due_redirect_reminders()) == 1
+        storage.stop_rotation()
+        assert not storage.due_redirect_reminders()
 
     asyncio.run(exercise())

@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 
 REGISTRATION_URL = "https://strz.ac/CoxW"
+REDIRECT_REMINDER_INTERVAL = 3 * 60 * 60
 REGISTRATION_HEADING = "✨✨ 𝑩𝑼𝑹𝑨𝑫𝑨𝑵 𝑲𝑨𝒀𝑰𝑻 𝑶𝑳 ✨✨"
 ACCOUNT_ACCESS_MESSAGE = (
     "🔗 Eski bağlantımız artık aktif değil, ancak merak etmeyin! Hesabınıza erişmek, "

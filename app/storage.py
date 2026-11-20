@@ -8,7 +8,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from app.content import BONUS_DELAY_SECONDS, PROMOTION_INTERVAL_SECONDS, NEW_USER_SEQUENCE_DELAYS, NEW_USER_SEQUENCE, ROTATION_INTERVAL_SECONDS, ROTATION_MESSAGES
+from app.content import BONUS_DELAY_SECONDS, PROMOTION_INTERVAL_SECONDS, NEW_USER_SEQUENCE_DELAYS, NEW_USER_SEQUENCE, ROTATION_INTERVAL_SECONDS, ROTATION_MESSAGES, REDIRECT_REMINDER_INTERVAL
 
 
 class PostgresConnection:
@@ -111,6 +111,13 @@ class Storage:
                     generation INTEGER NOT NULL DEFAULT 1
                 )
             """)
+            connection.execute("""
+                CREATE TABLE IF NOT EXISTS redirect_reminders (
+                    chat_id BIGINT PRIMARY KEY,
+                    language TEXT NOT NULL,
+                    next_at DOUBLE PRECISION NOT NULL
+                )
+            """)
             # Migrate databases created by older versions.
             if self.postgres:
                 columns = {row["name"] for row in connection.execute(
@@ -136,7 +143,7 @@ class Storage:
             source.row_factory = sqlite3.Row
             try:
                 tables = {row["name"] for row in source.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-                for table in ("submissions", "promo_users", "user_activity", "bot_settings", "rotation_jobs"):
+                for table in ("submissions", "promo_users", "user_activity", "bot_settings", "rotation_jobs", "redirect_reminders"):
                     if table not in tables:
                         continue
                     for row in source.execute(f"SELECT * FROM {table}"):
@@ -293,6 +300,51 @@ class Storage:
             connection.execute("UPDATE rotation_jobs SET enabled=0, generation=generation+1")
             connection.execute("UPDATE promo_users SET enabled=0")
             connection.commit()
+
+    def schedule_redirect_reminder(self, chat_id: int, language: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """INSERT INTO redirect_reminders(chat_id, language, next_at)
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(chat_id) DO UPDATE SET language=excluded.language, next_at=excluded.next_at""",
+                (chat_id, language, time.time() + REDIRECT_REMINDER_INTERVAL),
+            )
+
+    def due_redirect_reminders(self) -> list:
+        with self._connect() as connection:
+            return list(connection.execute(
+                """SELECT chat_id, language, next_at FROM redirect_reminders
+                   WHERE next_at<=? AND EXISTS (
+                       SELECT 1 FROM bot_settings WHERE key='mode' AND value IN ('registration', 'promotion')
+                   )
+                   ORDER BY next_at, chat_id LIMIT 50""",
+                (time.time(),),
+            ))
+
+    def claim_redirect_reminder(self, chat_id: int, next_at: float) -> float | None:
+        now = time.time()
+        lease_until = now + 120
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """UPDATE redirect_reminders SET next_at=? WHERE chat_id=? AND next_at=? AND next_at<=?
+                   AND EXISTS (
+                       SELECT 1 FROM bot_settings WHERE key='mode' AND value IN ('registration', 'promotion')
+                   )""",
+                (lease_until, chat_id, next_at, now),
+            )
+            return lease_until if cursor.rowcount else None
+
+    def finish_redirect_reminder(self, chat_id: int, lease_until: float, delay: float | None) -> None:
+        with self._connect() as connection:
+            if delay is None:
+                connection.execute(
+                    "DELETE FROM redirect_reminders WHERE chat_id=? AND next_at=?", (chat_id, lease_until)
+                )
+            else:
+                connection.execute(
+                    "UPDATE redirect_reminders SET next_at=? WHERE chat_id=? AND next_at=?",
+                    (time.time() + delay, chat_id, lease_until),
+                )
 
     def disable_user_schedule(self, chat_id: int) -> None:
         with self._connect() as connection:

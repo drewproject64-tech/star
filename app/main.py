@@ -28,7 +28,7 @@ from app.content import (
     Item,
 )
 from app.keyboards import detail_menu, item_menu, main_menu, result_menu, submit_menu
-from app.redirect import handle_redirect, prompt_for_language
+from app.redirect import handle_redirect, prompt_for_language, redirect_reminder_runner
 from app.storage import Storage
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(name)s | %(message)s")
@@ -232,7 +232,7 @@ async def build_dispatcher(storage: Storage, settings: Settings) -> Dispatcher:
         if storage.get_mode() != "registration":
             await callback.answer("Use /start to open the Star menu.", show_alert=True)
             return
-        await handle_redirect(callback, state)
+        await handle_redirect(callback, state, storage)
 
     @dp.message(Command("send"))
     async def send_command(message: Message, state: FSMContext, command: CommandObject) -> None:
@@ -546,7 +546,10 @@ async def main() -> None:
     bot = Bot(token=settings.bot_token)
     dp = await build_dispatcher(storage, settings)
     storage.pause_promotions()  # Disable legacy automatic jobs without deleting users or data.
-    scheduler_task = asyncio.create_task(rotation_scheduler_runner(bot, storage))
+    scheduler_tasks = (
+        asyncio.create_task(rotation_scheduler_runner(bot, storage)),
+        asyncio.create_task(redirect_reminder_runner(bot, storage)),
+    )
     logger.info("Starting Star bot")
     try:
         await bot.set_my_commands([
@@ -562,8 +565,9 @@ async def main() -> None:
         await bot.delete_webhook(drop_pending_updates=True)
         await dp.start_polling(bot)
     finally:
-        scheduler_task.cancel()
-        await asyncio.gather(scheduler_task, return_exceptions=True)
+        for task in scheduler_tasks:
+            task.cancel()
+        await asyncio.gather(*scheduler_tasks, return_exceptions=True)
         await bot.session.close()
         logger.info("Star bot stopped")
 

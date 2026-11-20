@@ -16,7 +16,9 @@ Ordinary messages do not broadcast unless the admin has deliberately opened the 
 The REDIRECT flow asks the user to register, offers the registration link again if needed,
 and shows the slot image before the final instructions. Upload the game image as
 `assets/redirect_slot.jpg`. If the image is unavailable, the user can retry the Yes button.
-After a worker restart, users can use `/start` to begin again.
+After a worker restart, users can use `/start` to begin again. After the final instructions,
+users receive a reminder in their chosen language every three hours while REDIRECT is active.
+The reminder schedule persists across restarts.
 
 The **Start Game Post Rotation** admin button is still available in REDIRECT mode.
 It sends one post every ten minutes in this order: Hold & Spin, Eternal Diamonds, Cashback.
